@@ -4,7 +4,7 @@
 
 IRVeil is a C++ library and LLVM pass plugin for selective compile-time obfuscation of C and C++ programs. The intended user owns the source and distributes a native executable. An analyst can read, modify, disassemble and run that executable and knows IRVeil's implementation. Seeds are reproducibility inputs, not secrets.
 
-The transformation changes selected integer additions into equivalent mixed boolean/arithmetic expressions. It is an experimental building block: it does not establish a quantified resistance to reverse engineering, hide runtime values, protect embedded credentials, or prevent patching. Control-flow virtualization, anti-debugging, binary rewriting, Go support and whole-program protection are outside v0.2. The [evaluation protocol](re-validation.md) defines the criteria; [the measured evaluation](re-evaluation.md) records results and counterevidence.
+The transformation changes selected integer additions into equivalent mixed boolean/arithmetic expressions. This arithmetic diversification does not establish a quantified resistance to reverse engineering, hide runtime values, protect embedded credentials, or prevent patching. Control-flow virtualization, anti-debugging, binary rewriting, Go support and whole-program protection are outside v0.2. The [evaluation protocol](re-validation.md) defines the criteria; [the measured evaluation](re-evaluation.md) records results and counterevidence.
 
 ## Integration
 
@@ -32,7 +32,7 @@ Expose counters for selected/changed functions and rewritten additions through t
 
 ## Validation and release gate
 
-1. Build the static library and plugin against the installed LLVM 18 toolchain. Compile and link a separate library consumer and a source-annotation consumer.
+1. Build the static library and plugin against the installed LLVM 18 toolchain. Compile and link a separate library consumer and a source-annotation consumer. Install into a temporary prefix and verify that an external CMake consumer discovers and links `IRVeil::Core` after relocating that prefix, with the same LLVM development installation.
 2. Verify transformed IR structurally with LLVM's verifier. Check identities exhaustively at small integer widths and with boundary/random inputs at 32/64 bits, with reproducible random seeds. Distinguish structural verification from semantic evidence.
 3. Compile the same owned fixtures with and without the plugin; compare observable results. Exercise branches, loops, multiple selected functions, unselected functions, wraparound, signed defined inputs and scalar-width exclusions. Run AddressSanitizer/UndefinedBehaviorSanitizer where compatible.
 4. Verify selection, bounded expansion, deterministic output, option rejection, empty/unannotated modules and repeat-pass idempotence. Compare seeds on a fixture with enough eligible operations without claiming a different output is guaranteed for every input.

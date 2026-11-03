@@ -2,7 +2,7 @@
 
 ## Conclusion
 
-The arithmetic expressions remain readable and algebraically recoverable in Ghidra's decompiled C. This experiment does **not** demonstrate greater resistance to Ghidra or a human analyst. IRVeil remains experimental arithmetic diversification, not a strong protection boundary.
+The arithmetic expressions remain readable and algebraically recoverable in Ghidra's decompiled C. This experiment does **not** demonstrate greater resistance to Ghidra or a human analyst. The measured scope is arithmetic diversification; it does not establish a protection boundary.
 
 There is a narrower, measured improvement: v0.2 removes an identity that LLVM 18.1.3 InstCombine restores directly to an addition. The new regression fails against the preserved v0.1 plugin and passes against v0.2. Increasing instructions or high P-code operations is not interpreted as a resistance score.
 
@@ -14,7 +14,7 @@ There is a narrower, measured improvement: v0.2 removes an identity that LLVM 18
 - Reference source: [`b72eb4a`](https://github.com/Altitud-Studio-S-L-U/irveil/tree/b72eb4a6a962958bb86ffbd88f6e6c310674367d). Reference plugin SHA-256: `d47c4b756a709ce2b57bdaa8a2dc70139211b5f881d31853c9b0672369b03bc7`.
 - Candidate plugin SHA-256: `c2c685cd7cbbb4dfb78e1ab488f0f4b98517bfd390d66119377a4bb86c727320`.
 
-The [v0.2.0 experimental release](https://github.com/Altitud-Studio-S-L-U/irveil/releases/tag/v0.2.0) contains structured evaluation data, both canonicalization reports, the owned stripped fixtures, disassembly, decompiled C and P-code, the two measured plugins and a SHA-256 manifest. Plugins are benchmark artifacts for the exact Linux/LLVM installation, not portable native packages. Generated Ghidra projects and full logs are not committed or published. Published JSON substitutes local workspace/tool paths with `${IRVEIL_ROOT}`, `${GHIDRA_HOME}` and `${JAVA_HOME}`; measured facts and artifact hashes are unchanged.
+The [v0.2.0 release](https://github.com/Altitud-Studio-S-L-U/irveil/releases/tag/v0.2.0) contains structured evaluation data, both canonicalization reports, the owned stripped fixtures, disassembly, decompiled C and P-code, the two measured plugins and a SHA-256 manifest. Plugins are benchmark artifacts for the exact Linux/LLVM installation, not portable native packages. Generated Ghidra projects and full logs are not committed or published. Published JSON substitutes local workspace/tool paths with `${IRVEIL_ROOT}`, `${GHIDRA_HOME}` and `${JAVA_HOME}`; measured facts and artifact hashes are unchanged.
 
 ## LLVM canonicalization
 
@@ -86,7 +86,7 @@ No human timing study, function-discovery challenge, binary patching exercise, s
 
 ## Reproduce
 
-Build IRVeil and run its local suite as documented in the README. Obtain Ghidra 12.2 and JDK 25 from their official releases and verify their archive checksums. Use the frozen reference plugin from the experimental release; the RE harness checks its exact hash and requires LLVM 18.1.3. For general library integration, build from source against the matching installed LLVM package.
+Build IRVeil and run its local suite as documented in the README, using Python 3.8 or later. Obtain Ghidra 12.2 and JDK 25 from their official releases and verify their archive checksums. Use the frozen reference plugin from the v0.2.0 release; the RE harness checks its exact hash and requires LLVM 18.1.3. The recorded candidate hash and Ghidra results above also belong to v0.2.0; evaluating a later build produces new evidence. For general library integration, build from source against the matching installed LLVM package.
 
 ```sh
 python3 tools/check_canonicalization.py --llvm-bin /usr/lib/llvm-18/bin \

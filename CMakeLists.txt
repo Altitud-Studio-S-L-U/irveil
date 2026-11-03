@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(IRVeil VERSION 0.2.0 LANGUAGES C CXX)
+project(IRVeil VERSION 0.2.1 LANGUAGES C CXX)
 
 find_package(LLVM REQUIRED CONFIG)
 if(NOT LLVM_VERSION_MAJOR EQUAL 18)
@@ -58,4 +58,8 @@ if(BUILD_TESTING)
   add_test(NAME irveil-re-harness
     COMMAND ${Python3_EXECUTABLE} -m unittest discover
       -s ${CMAKE_CURRENT_SOURCE_DIR}/tools/re -p "tests_*.py")
+  add_test(NAME irveil-installed-consumer
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installed_package.py
+      --build-dir ${CMAKE_CURRENT_BINARY_DIR} --cmake ${CMAKE_COMMAND}
+      --llvm-bin ${LLVM_TOOLS_BINARY_DIR} --configuration $<CONFIG>)
 endif()

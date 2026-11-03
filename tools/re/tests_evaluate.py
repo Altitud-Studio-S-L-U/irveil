@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Failure controls for the RE evaluator; actual Ghidra is exercised separately."""
 import copy
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("irveil_re_evaluate", Path(__file__).with_name("evaluate.py"))
 EVALUATE = importlib.util.module_from_spec(SPEC)
@@ -13,6 +16,30 @@ SPEC.loader.exec_module(EVALUATE)
 
 
 class EvaluationControls(unittest.TestCase):
+    def test_output_paths_preserve_repository_boundary_on_python38(self):
+        with tempfile.TemporaryDirectory(prefix="irveil-re-paths-") as temporary:
+            root = Path(temporary).resolve() / "repository"
+            root.mkdir()
+            (root / "work").mkdir()
+            base = ["--baseline-plugin", "reference.so", "--candidate-plugin", "candidate.so",
+                    "--ghidra-home", "ghidra", "--java-home", "java", "--llvm-bin", "llvm"]
+            with mock.patch.object(EVALUATE, "ROOT", root), \
+                    mock.patch.object(EVALUATE.platform, "system", return_value="Linux"), \
+                    mock.patch.object(EVALUATE.platform, "machine", return_value="x86_64"), \
+                    mock.patch.object(Path, "is_relative_to", create=True,
+                                      side_effect=AttributeError("Not available in Python 3.8")):
+                for output in [root / "work", root / "work" / "evidence", root.parent / "evidence",
+                               root.parent / "repository-other" / "evidence"]:
+                    with self.subTest(accepted=output):
+                        result = EVALUATE.arguments(base + ["--output", str(output)])
+                        self.assertEqual(result.output, output.resolve())
+                for output in [root, root / "docs", root / "work-other", root / "work" / ".." / "src"]:
+                    with self.subTest(rejected=output), redirect_stderr(io.StringIO()) as errors:
+                        with self.assertRaises(SystemExit) as rejected:
+                            EVALUATE.arguments(base + ["--output", str(output)])
+                        self.assertEqual(rejected.exception.code, 2)
+                        self.assertIn("must be under work/", errors.getvalue())
+
     def test_symbol_mapping_uses_each_companion_and_rejects_missing_or_duplicate(self):
         symbols = "\n".join(f"{0x401000 + index * 16:016x} 0000000000000004 T {name}"
                             for index, name in enumerate(EVALUATE.FUNCTIONS))

@@ -2,11 +2,13 @@
 """Black-box LLVM 18 integration tests; no dependency on the pass implementation."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -226,8 +228,8 @@ class IRVeilTests(unittest.TestCase):
                 self.assertEqual(len(uses), 1)
                 self.assertRegex(uses[0], r"= freeze i8 %a\b")
                 self.assertNotRegex(body, r"add i8 %a, 1")
-                choices.update(re.findall(r"\b(xor|or) i8\b", body))
-        self.assertEqual(choices, {"xor", "or"}, "The seed corpus must exercise both documented identities")
+                choices.update(re.findall(r"\b(add|sub) i8\b", body))
+        self.assertEqual(choices, {"add", "sub"}, "The seed corpus must exercise both documented identities")
 
     def test_repeat_pass_is_idempotent_and_seed_is_reproducible(self):
         source = self.fixture("selection.ll")
@@ -240,6 +242,21 @@ class IRVeilTests(unittest.TestCase):
         outputs = {canonical_ir(self.transform(source, f"irveil<seed={seed};max-adds=8>"))
                    for seed in range(16)}
         self.assertGreater(len(outputs), 1, "Seed corpus produced no distinct transformed output")
+
+    def test_general_additions_survive_the_documented_canonicalization_corpus(self):
+        result = self.checked([sys.executable, ROOT / "tools" / "check_canonicalization.py",
+                               "--llvm-bin", self.llvm, "--plugin", self.plugin])
+        report = json.loads(result.stdout)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["seeds"], list(range(16)))
+        self.assertEqual(report["widths"], [2, 8, 32, 64])
+        self.assertEqual(set(report["results"]), {"instcombine", "canonicalize", "O2", "O3"})
+        for pipeline, observation in report["results"].items():
+            with self.subTest(pipeline=pipeline):
+                self.assertEqual(observation["generalCases"], 128)
+                self.assertEqual(observation["singleAddRestorations"], 0)
+                self.assertEqual(observation["controlCases"], 128)
+                self.assertEqual(observation["controlMismatches"], 0)
 
     def test_explicit_loading_does_not_run_without_requested_pipeline(self):
         output = self.transform(self.fixture("selection.ll"), "verify")

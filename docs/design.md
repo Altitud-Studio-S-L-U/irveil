@@ -1,10 +1,10 @@
-# IRVeil v0.1 contract
+# IRVeil v0.2 contract
 
 ## Purpose and threat model
 
 IRVeil is a C++ library and LLVM pass plugin for selective compile-time obfuscation of C and C++ programs. The intended user owns the source and distributes a native executable. An analyst can read, modify, disassemble and run that executable and knows IRVeil's implementation. Seeds are reproducibility inputs, not secrets.
 
-The initial transformation changes selected integer additions into equivalent mixed boolean/arithmetic expressions. It is an experimental building block: it does not establish a quantified resistance to reverse engineering, hide runtime values, protect embedded credentials, or prevent patching. Control-flow virtualization, anti-debugging, binary rewriting, Go support and whole-program protection are outside v0.1.
+The transformation changes selected integer additions into equivalent mixed boolean/arithmetic expressions. It is an experimental building block: it does not establish a quantified resistance to reverse engineering, hide runtime values, protect embedded credentials, or prevent patching. Control-flow virtualization, anti-debugging, binary rewriting, Go support and whole-program protection are outside v0.2. The [evaluation protocol](re-validation.md) defines the criteria; [the measured evaluation](re-evaluation.md) records results and counterevidence.
 
 ## Integration
 
@@ -20,13 +20,15 @@ Only scalar LLVM `add` instructions of integer widths 2 through 64 in annotated,
 
 `a + b = (a XOR b) + ((a AND b) << 1)`
 
-`a + b = (a OR b) + (a AND b)`
+`a + b = ((a OR b) << 1) - (a XOR b)`
+
+The second identity replaces v0.1's `(a OR b) + (a AND b)`, which LLVM 18 InstCombine restores directly to `add`. Since `a OR b = (a XOR b) + (a AND b)` as integer bit sums, doubling it and subtracting XOR gives the same modular addition as the first identity. This changes seeded output across versions; reproduce results with the same IRVeil version as well as the same LLVM version.
 
 Both identities operate modulo 2^w. Freeze each operand before duplicating its uses: the mathematical identities alone are insufficient for LLVM values that may contain `undef` bits. Do not copy `nsw`, `nuw` or other arithmetic flags onto replacement instructions. For source executions where an original flagged add is defined, the result must be preserved. The pass is not a repair for undefined behavior in the input program. A one-bit shift is only constructed for widths at least two. Preserve debug locations where possible; invalidate affected LLVM analyses accurately. Do not introduce globals, runtime initialization, calls, memory accesses or conditional branches.
 
 Inspect a bounded set of original instructions; never recursively transform generated instructions. With A annotation entries, I instructions inspected, K rewritten additions, U operand uses updated and L bytes of function names hashed, the coordination work is O(A + I + K + U + L), aside from LLVM container internals. Replacing an instruction must visit its users even when the candidate cap ends the scan early. Auxiliary storage is O(A + K). K is bounded by the per-function cap times the number of selected functions. Each replacement adds at most five net instructions, including the two freezes. These bounds describe this pass, not the compiler's other optimizations or machine-code size.
 
-Expose counters for selected/changed functions and rewritten additions through the library API. Invalid library configuration returns a recoverable `llvm::Error` through `llvm::Expected<Statistics>` before mutating the module. No source content, seeds or application names are uploaded. Diagnostics and artifacts remain local.
+Expose counters for selected/changed functions and rewritten additions through the library API. Invalid library configuration returns a recoverable `llvm::Error` through `llvm::Expected<Statistics>` before mutating the module. A processed function remains unchanged even with another seed or IRVeil version; generate fresh IR from source to evaluate a different transformation. No source content, seeds or application names are uploaded. Diagnostics and artifacts remain local.
 
 ## Validation and release gate
 

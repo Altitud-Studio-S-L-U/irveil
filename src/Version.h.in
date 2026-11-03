@@ -1,0 +1,6 @@
+#ifndef IRVEIL_VERSION_H
+#define IRVEIL_VERSION_H
+
+#define IRVEIL_VERSION_STRING "@PROJECT_VERSION@"
+
+#endif

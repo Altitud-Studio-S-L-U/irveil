@@ -1,4 +1,5 @@
 #include "irveil/Pass.h"
+#include "Version.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -55,7 +56,7 @@ bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
 
 extern "C" LLVM_ATTRIBUTE_WEAK llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
-  return {LLVM_PLUGIN_API_VERSION, "IRVeil", "0.1.0",
+  return {LLVM_PLUGIN_API_VERSION, "IRVeil", IRVEIL_VERSION_STRING,
           [](llvm::PassBuilder &builder) {
             builder.registerPipelineParsingCallback(
                 [](llvm::StringRef name, llvm::ModulePassManager &manager,

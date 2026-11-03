@@ -263,7 +263,10 @@ def arguments(argv=None):
     for key in ["baseline_plugin", "candidate_plugin", "ghidra_home", "java_home", "llvm_bin", "output"]:
         if getattr(result, key) is not None:
             setattr(result, key, getattr(result, key).resolve())
-    if result.output.is_relative_to(ROOT) and not result.output.is_relative_to(ROOT / "work"):
+    inside_repository = result.output == ROOT or ROOT in result.output.parents
+    work = ROOT / "work"
+    inside_work = result.output == work or work in result.output.parents
+    if inside_repository and not inside_work:
         parser.error("Generated evidence inside the repository must be under work/")
     return result
 

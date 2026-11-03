@@ -10,7 +10,7 @@
 
 **Selective LLVM obfuscation for C and C++.** A C++ library and compiler plugin that replace integer additions in explicitly marked functions with equivalent mixed boolean/arithmetic expressions.
 
-IRVeil is an experimental building block for studying the cost and limits of native-code obfuscation. It aims to increase analysis effort, but this initial transformation does not establish resistance against a skilled reverse engineer. An analyst can recover, simplify or patch the distributed executable. Seeds are public reproducibility inputs; embedded credentials and runtime values remain recoverable.
+IRVeil provides selective arithmetic diversification with explicit transformation bounds and reproducible compiler and Ghidra evaluations. The current transformation does not establish resistance against a skilled reverse engineer. An analyst can recover, simplify or patch the distributed executable. Seeds are public reproducibility inputs; embedded credentials and runtime values remain recoverable.
 
 ## Build
 
@@ -68,15 +68,29 @@ The static target exposes `irveil::applyObfuscation(llvm::Module&, irveil::Confi
 cmake --install build --prefix "$PWD/build/install"
 ```
 
-In a consumer CMake project:
+The [standalone consumer](examples/library-consumer) loads LLVM IR, calls the library, verifies the result and writes the transformed IR to standard output. Its CMake project links only the exported target:
 
 ```cmake
-cmake_minimum_required(VERSION 3.20)
-project(your_tool LANGUAGES C CXX)
 find_package(IRVeil 0.2 CONFIG REQUIRED)
-add_executable(your_tool main.cpp)
-target_link_libraries(your_tool PRIVATE IRVeil::Core)
+add_executable(irveil-consumer main.cpp)
+target_link_libraries(irveil-consumer PRIVATE IRVeil::Core)
 ```
+
+Configure it against the installation prefix, then run it from the repository root:
+
+```sh
+cmake -S examples/library-consumer -B build/consumer \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/build/install" \
+  -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
+  -DLLVM_DIR="$(llvm-config-18 --cmakedir)"
+cmake --build build/consumer --parallel 2
+clang++-18 -O2 -I build/install/include -S -emit-llvm examples/demo.cpp -o build/input.ll
+./build/consumer/irveil-consumer build/input.ll > build/transformed.ll
+clang++-18 build/transformed.ll -o build/consumer-demo
+./build/consumer-demo
+```
+
+The example uses the default seed and cap; counters go to standard error. Parsing, verification or library errors return a nonzero status without writing a result module.
 
 The API depends on LLVM 18 C++ types and is not a stable cross-version LLVM ABI. Installed consumers still need the matching LLVM development package. Enable C as well as C++ in the consumer because LLVM's package configuration checks C dependencies.
 
@@ -109,7 +123,7 @@ With `A` annotations, `I` inspected instructions, `K` rewritten additions, `U` o
 
 ## Validation
 
-The local suite checks integration through `clang` and `opt`, the library API, selection, deterministic configuration, expansion caps, repeat-run behavior and invalid options. Arithmetic checks cover exhaustive small-width inputs and reproducible boundary/random inputs at larger widths. Native fixture outputs are compared with ordinary builds. Structural IR verification and execution tests provide different evidence; neither alone proves equivalence for every possible C++ program.
+The local suite checks integration through `clang` and `opt`, the library API, selection, deterministic configuration, expansion caps, repeat-run behavior and invalid options. It also installs the package into a temporary prefix, relocates that prefix, and builds and runs the standalone consumer through `find_package` outside the source tree with the same LLVM installation. Arithmetic checks cover exhaustive small-width inputs and reproducible boundary/random inputs at larger widths. Native fixture outputs are compared with ordinary builds. Structural IR verification and execution tests provide different evidence; neither alone proves equivalence for every possible C++ program.
 
 Measure the included synthetic fixture, including a stripping-only baseline:
 
@@ -127,3 +141,5 @@ The durable scope and acceptance criteria are in [the design contract](docs/desi
 ## Project
 
 Created by [Altitud Studio](https://altitudstudio.ad/es/codigo-abierto/). Source is available under the [MIT license](LICENSE). Changes go through pull requests; see [contributing](CONTRIBUTING.md). Report security concerns privately using [the security policy](SECURITY.md).
+
+See the [changelog](CHANGELOG.md) for release changes.

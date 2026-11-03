@@ -73,7 +73,7 @@ In a consumer CMake project:
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(your_tool LANGUAGES C CXX)
-find_package(IRVeil 0.1 CONFIG REQUIRED)
+find_package(IRVeil 0.2 CONFIG REQUIRED)
 add_executable(your_tool main.cpp)
 target_link_libraries(your_tool PRIVATE IRVeil::Core)
 ```
@@ -86,12 +86,12 @@ For a scalar integer of width `w`, both identities preserve addition modulo `2^w
 
 ```text
 a + b = (a XOR b) + ((a AND b) << 1)
-a + b = (a OR b)  + (a AND b)
+a + b = ((a OR b) << 1) - (a XOR b)
 ```
 
 Operands are frozen before reuse to handle LLVM `undef` semantics. Arithmetic overflow flags are not copied to the replacement. This preserves results for defined input executions; it does not fix undefined behavior in the source.
 
-| Boundary | v0.1 behavior |
+| Boundary | v0.2 behavior |
 | --- | --- |
 | Selection | Defined functions annotated `irveil`; no transitive selection |
 | Operations | Scalar integer `add`, widths 2 through 64 |
@@ -100,6 +100,8 @@ Operands are frozen before reuse to handle LLVM `undef` semantics. Arithmetic ov
 | IR growth | At most five net instructions per rewritten addition |
 | Repeat runs | A processed function is not expanded again |
 | Reproducibility | Same IR, configuration and toolchain produce the same transformation |
+
+Version 0.2 replaces the OR/AND identity from v0.1, which LLVM 18 InstCombine simplifies directly to an addition. The algebra remains publicly recognizable; avoiding that particular compiler rewrite does not prevent an analyst from recovering the addition. Seeded output is version-dependent. Generate fresh IR from source when comparing versions: the processed-function marker deliberately prevents re-expansion, including with another seed or version.
 
 The choice of identity uses FNV-1a over the LLVM function name, XOR with the configured seed, followed by SplitMix64 for each eligible addition in IR order. This is deterministic diversification, not cryptography.
 
@@ -118,7 +120,9 @@ python3 tools/measure.py --plugin build/IRVeilPass.so \
 
 The command compares outputs and records native instruction counts, executable sizes, compile observations and paired execution times. It runs the owned example program; instruction growth is not a measure of RE resistance. Review the workload and environment recorded in the JSON before interpreting timings.
 
-The durable scope and acceptance criteria are in [the design contract](docs/design.md). No measured percentage of RE resistance or universal performance guarantee is claimed.
+The [Ghidra and LLVM evaluation](docs/re-evaluation.md) compares ordinary, v0.1 and v0.2 builds at O2/O3. It records the eliminated LLVM simplification and the counterevidence: the expressions remain readable in Ghidra and their algebra is recoverable. The experiment does not demonstrate increased resistance to Ghidra or a human analyst.
+
+The durable scope and acceptance criteria are in [the design contract](docs/design.md) and [the reverse-engineering evaluation protocol](docs/re-validation.md). No measured percentage of RE resistance or universal performance guarantee is claimed.
 
 ## Project
 

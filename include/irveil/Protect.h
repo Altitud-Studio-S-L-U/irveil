@@ -5,7 +5,7 @@
 #if defined(__clang__)
 #define IRVEIL_PROTECT __attribute__((annotate("irveil"), noinline))
 #else
-#error "IRVEIL_PROTECT requires Clang; IRVeil v0.1 supports LLVM/Clang 18"
+#error "IRVEIL_PROTECT requires Clang; IRVeil supports LLVM/Clang 18"
 #endif
 
 #endif

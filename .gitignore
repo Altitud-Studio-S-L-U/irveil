@@ -1,0 +1,9 @@
+/build*/
+/work/
+/.cache/
+*.so
+*.a
+*.o
+*.bc
+__pycache__/
+*.pyc

@@ -246,6 +246,13 @@ The command compares outputs and records native instruction counts, executable s
 
 The [Ghidra and LLVM evaluation](docs/re-evaluation.md) compares ordinary, v0.1 and v0.2 builds at O2/O3. It records the eliminated LLVM simplification and the counterevidence: the expressions remain readable in Ghidra and their algebra is recoverable. The experiment does not demonstrate increased resistance to Ghidra or a human analyst.
 
+The extended evaluation applies pinned SiMBA and GAMBA attacks to expressions
+extracted from the v0.2.0 native artifacts, with separate recovered, unsupported,
+timeout and error outcomes. The [recovery protocol](docs/re-validation.md#simba-recovery-protocol)
+contains the optional tool setup, limits and commands; these tools are not build
+dependencies. Experimental transformations are evaluated separately from the
+released algorithm.
+
 The durable scope and acceptance criteria are in [the design contract](docs/design.md) and [the reverse-engineering evaluation protocol](docs/re-validation.md). No measured percentage of RE resistance or universal performance guarantee is claimed.
 
 ## Project

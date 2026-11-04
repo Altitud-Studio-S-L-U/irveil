@@ -28,7 +28,8 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module,
 
 class IRVeilPass : public llvm::PassInfoMixin<IRVeilPass> {
 public:
-  explicit IRVeilPass(Config config = {}) : config_(config) {}
+  explicit IRVeilPass(Config config = {}, bool report = false)
+      : config_(config), report_(report) {}
 
   llvm::PreservedAnalyses run(llvm::Module &module,
                               llvm::ModuleAnalysisManager &analysisManager);
@@ -37,6 +38,7 @@ public:
 
 private:
   Config config_;
+  bool report_;
 };
 
 } // namespace irveil

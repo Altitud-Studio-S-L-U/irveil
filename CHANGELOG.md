@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add installed compiler-only CMake consumption and per-target seed, cap and
+  reporting options, with an independent two-target C++ example.
+- State reverse-engineering resistance as the project's goal and distinguish
+  current arithmetic diversification from future improvements.
+
 ## 0.2.1
 
 - Keep the RE evaluator's output-path validation compatible with Python 3.8, including the restriction that evidence inside the repository belongs under `work/`.

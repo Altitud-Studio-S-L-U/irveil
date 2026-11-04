@@ -10,6 +10,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <system_error>
@@ -177,6 +178,13 @@ llvm::PreservedAnalyses IRVeilPass::run(
   auto result = applyObfuscation(module, config_);
   if (!result)
     llvm::report_fatal_error(llvm::Twine(llvm::toString(result.takeError())));
+  if (report_)
+    llvm::errs() << "IRVeil: module=" << module.getModuleIdentifier()
+                 << " seed=" << config_.seed
+                 << " max-adds=" << config_.maxAddsPerFunction
+                 << " selected=" << result->selectedFunctions
+                 << " changed=" << result->changedFunctions
+                 << " rewritten-adds=" << result->rewrittenAdds << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

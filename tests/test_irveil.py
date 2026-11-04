@@ -338,6 +338,44 @@ class IRVeilTests(unittest.TestCase):
                 self.assertIsNotNone(attributes)
                 self.assertRegex(attributes.group(1), r"\bnoinline\b")
 
+    def test_clang_configuration_and_diagnostics(self):
+        command = [self.llvm / "clang++", "-O2", "-I", self.include,
+                   "-Xclang", "-load", "-Xclang", self.plugin,
+                   f"-fpass-plugin={self.plugin}", "-S", "-emit-llvm",
+                   ROOT / "examples/demo.cpp", "-o", "-"]
+        outputs = []
+        for seed in [0, 42, 18446744073709551615]:
+            result = self.checked([*command, "-mllvm", f"-irveil-seed={seed}",
+                                   "-mllvm", "-irveil-max-adds=1",
+                                   "-mllvm", "-irveil-report"])
+            self.assertIn(f"seed={seed} max-adds=1 selected=1 changed=1 rewritten-adds=1",
+                          result.stderr)
+            outputs.append(canonical_ir(result.stdout))
+        self.assertGreater(len(set(outputs)), 1)
+        for option, diagnostic in [
+                ("-irveil-seed=-1", "0..18446744073709551615"),
+                ("-irveil-seed=0x10", "unsigned decimal"),
+                ("-irveil-seed=18446744073709551616", "unsigned decimal"),
+                ("-irveil-max-adds=0", "1..4096"),
+                ("-irveil-max-adds=4097", "1..4096")]:
+            with self.subTest(option=option):
+                result = execute([*command, "-mllvm", option])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("IRVeil:", result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertEqual(result.stdout, "")
+
+        # Explicit opt pipelines retain their own configuration, even if the
+        # command-line settings used by Clang's extension point are present.
+        source = self.fixture("selection.ll")
+        expected = self.transform(source, "irveil<seed=42;max-adds=3>")
+        actual = self.checked([
+            self.llvm / "opt", "-load-pass-plugin", self.plugin,
+            "-irveil-seed=9", "-irveil-max-adds=1",
+            "-passes=irveil<seed=42;max-adds=3>", "-verify-each", "-S", "-o", "-", "-",
+        ], input_text=source).stdout
+        self.assertEqual(canonical_ir(actual), canonical_ir(expected))
+
     def test_asan_and_ubsan_where_the_baseline_runtime_works(self):
         flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-sanitize-recover=all"]
         probe_source = self.work / "sanitizer-probe.cpp"

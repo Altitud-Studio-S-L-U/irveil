@@ -4,10 +4,25 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <cstdint>
+#include <string>
 
 namespace {
+
+// Clang must load the DSO before parsing -mllvm options. The installed CMake
+// helper uses -Xclang -load as well as -fpass-plugin for this reason.
+llvm::cl::opt<std::string> ClangSeed(
+    "irveil-seed", llvm::cl::desc("IRVeil unsigned decimal seed"),
+    llvm::cl::init("0"));
+llvm::cl::opt<std::string> ClangMaxAdds(
+    "irveil-max-adds", llvm::cl::desc("IRVeil additions per function (1..4096)"),
+    llvm::cl::init("256"));
+llvm::cl::opt<bool> ClangReport(
+    "irveil-report", llvm::cl::desc("Report IRVeil configuration and counters"),
+    llvm::cl::init(false));
 
 bool parseUnsignedDecimal(llvm::StringRef text, std::uint64_t &value) {
   if (text.empty())
@@ -52,6 +67,20 @@ bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
   return false;
 }
 
+irveil::Config clangConfig() {
+  irveil::Config config;
+  std::uint64_t cap;
+  if (!parseUnsignedDecimal(ClangSeed.getValue(), config.seed))
+    llvm::report_fatal_error(
+        "IRVeil: -irveil-seed must be an unsigned decimal integer in "
+        "0..18446744073709551615", false);
+  if (!parseUnsignedDecimal(ClangMaxAdds.getValue(), cap) || cap < 1 || cap > 4096)
+    llvm::report_fatal_error(
+        "IRVeil: -irveil-max-adds must be a decimal integer in 1..4096", false);
+  config.maxAddsPerFunction = static_cast<std::uint32_t>(cap);
+  return config;
+}
+
 } // namespace
 
 extern "C" LLVM_ATTRIBUTE_WEAK llvm::PassPluginLibraryInfo
@@ -69,7 +98,7 @@ llvmGetPassPluginInfo() {
                 });
             builder.registerOptimizerLastEPCallback(
                 [](llvm::ModulePassManager &manager, llvm::OptimizationLevel) {
-                  manager.addPass(irveil::IRVeilPass());
+                  manager.addPass(irveil::IRVeilPass(clangConfig(), ClangReport));
                 });
           }};
 }

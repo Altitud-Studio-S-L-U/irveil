@@ -14,6 +14,28 @@ Provide an embeddable static target `IRVeil::Core`, a loadable `IRVeilPass` modu
 
 Support the explicit module pipeline `irveil` in `opt`, plus `irveil<seed=N;max-adds=N>`. Seed is an unsigned decimal 64-bit integer; max-adds is an integer from 1 through 4096, default 256. Reject unknown, duplicate, malformed and out-of-range options. The explicit pipeline runs only when requested. For `clang -fpass-plugin`, register the default configuration at the optimizer-last extension point. Test the actual supported optimization modes rather than inferring support from registration alone. Re-running the pass on the same function must not expand the generated additions again; mark processed functions with a dedicated IR attribute.
 
+### Installed compiler integration
+
+`find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)` imports `IRVeil::Pass`
+and `IRVeil::Headers` without finding LLVM's development package or importing the
+static core. A package lookup without components retains the existing `Core`
+behavior and its matching LLVM development dependency.
+
+`irveil_protect_target(target [SEED N] [MAX_ADDS N] [REPORT])` applies private
+compile options and includes to one local compiled target. Seed defaults to 0
+and accepts decimal uint64; the cap defaults to 256 and accepts 1..4096. Reject
+unknown/repeated/missing/out-of-range options, repeated helper calls, imported or
+alias targets and visible IPO settings at configure time. The helper uses Clang's
+early DSO load before parsing `-mllvm` options, then `-fpass-plugin` to register
+the optimizer-last pass. It does not use process environment configuration.
+
+Clang options `-irveil-seed`, `-irveil-max-adds` and `-irveil-report` configure
+only the automatic extension point. Invalid values fail before pass mutation;
+the explicit `opt` pipeline retains its own configuration. Optional reports name
+the module, effective configuration and selected/changed/rewritten counters.
+They establish IR work, not final-binary survival. The README defines the native
+inspection procedure and the observed `-save-temps` limitation.
+
 ## Semantics and bounds
 
 Only scalar LLVM `add` instructions of integer widths 2 through 64 in annotated, defined functions are eligible. Skip vectors, i1, wider integers and other opcodes. Respect the per-function cap on original additions. Select one of two identities deterministically using a documented, non-cryptographic seed derivation from the configuration and LLVM function name:

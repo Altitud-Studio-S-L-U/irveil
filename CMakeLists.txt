@@ -28,17 +28,27 @@ if(NOT LLVM_ENABLE_RTTI)
 endif()
 target_link_libraries(IRVeilCore PUBLIC LLVM)
 
+add_library(IRVeilHeaders INTERFACE)
+add_library(IRVeil::Headers ALIAS IRVeilHeaders)
+set_target_properties(IRVeilHeaders PROPERTIES EXPORT_NAME Headers)
+target_include_directories(IRVeilHeaders INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
 configure_file(src/Version.h.in generated/Version.h @ONLY)
 add_library(IRVeilPass MODULE src/Plugin.cpp)
-set_target_properties(IRVeilPass PROPERTIES PREFIX "")
+add_library(IRVeil::Pass ALIAS IRVeilPass)
+set_target_properties(IRVeilPass PROPERTIES PREFIX "" EXPORT_NAME Pass)
 target_include_directories(IRVeilPass PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(IRVeilPass PRIVATE IRVeil::Core)
 target_compile_options(IRVeilPass PRIVATE -Wall -Wextra -Wpedantic)
 
 install(TARGETS IRVeilCore EXPORT IRVeilTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(TARGETS IRVeilPass LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/irveil)
+install(TARGETS IRVeilPass EXPORT IRVeilPluginTargets LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/irveil)
+install(TARGETS IRVeilHeaders EXPORT IRVeilPluginTargets)
 install(DIRECTORY include/irveil DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT IRVeilTargets NAMESPACE IRVeil:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/IRVeil)
+install(EXPORT IRVeilPluginTargets NAMESPACE IRVeil:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/IRVeil)
 configure_package_config_file(cmake/IRVeilConfig.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/IRVeilConfig.cmake
   INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/IRVeil)
@@ -46,6 +56,7 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/IRVeilConfigVersion
   VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/IRVeilConfig.cmake
   ${CMAKE_CURRENT_BINARY_DIR}/IRVeilConfigVersion.cmake
+  cmake/IRVeilTarget.cmake
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/IRVeil)
 
 include(CTest)
@@ -60,6 +71,10 @@ if(BUILD_TESTING)
       -s ${CMAKE_CURRENT_SOURCE_DIR}/tools/re -p "tests_*.py")
   add_test(NAME irveil-installed-consumer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installed_package.py
+      --build-dir ${CMAKE_CURRENT_BINARY_DIR} --cmake ${CMAKE_COMMAND}
+      --llvm-bin ${LLVM_TOOLS_BINARY_DIR} --configuration $<CONFIG>)
+  add_test(NAME irveil-compiler-consumer
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_compiler_package.py
       --build-dir ${CMAKE_CURRENT_BINARY_DIR} --cmake ${CMAKE_COMMAND}
       --llvm-bin ${LLVM_TOOLS_BINARY_DIR} --configuration $<CONFIG>)
 endif()

@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.20)
+project(IRVeilApplicationExample LANGUAGES CXX)
+
+find_package(IRVeil 0.2 CONFIG REQUIRED COMPONENTS Plugin)
+option(ENABLE_IRVEIL "Apply IRVeil to protected-app only" OFF)
+set(IRVEIL_SEED 42 CACHE STRING "Unsigned decimal transformation seed")
+set(IRVEIL_MAX_ADDS 2 CACHE STRING "Maximum original additions transformed per function")
+
+add_executable(ordinary-app main.cpp)
+add_executable(protected-app main.cpp)
+foreach(application ordinary-app protected-app)
+  target_compile_features(${application} PRIVATE cxx_std_17)
+  target_link_libraries(${application} PRIVATE IRVeil::Headers)
+endforeach()
+if(ENABLE_IRVEIL)
+  irveil_protect_target(protected-app SEED "${IRVEIL_SEED}" MAX_ADDS "${IRVEIL_MAX_ADDS}" REPORT)
+endif()

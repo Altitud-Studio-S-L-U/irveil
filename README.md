@@ -10,7 +10,7 @@
 
 **Selective LLVM obfuscation for C and C++.** A C++ library and compiler plugin that replace integer additions in explicitly marked functions with equivalent mixed boolean/arithmetic expressions.
 
-IRVeil provides selective arithmetic diversification with explicit transformation bounds and reproducible compiler and Ghidra evaluations. The current transformation does not establish resistance against a skilled reverse engineer. An analyst can recover, simplify or patch the distributed executable. Seeds are public reproducibility inputs; embedded credentials and runtime values remain recoverable.
+IRVeil aims to make reverse engineering harder through selective, bounded transformations at the LLVM IR level. The current release provides arithmetic diversification, with reproducible compiler and reverse-engineering evaluations guiding further improvements. Seeds control reproducibility; they are not secrets, and embedded credentials and runtime values remain recoverable.
 
 ## Build
 
@@ -26,7 +26,99 @@ ctest --test-dir build --output-on-failure
 
 Configuration does not download dependencies. This repository deliberately has no CI/CD workflows; checks run locally.
 
-## Use while compiling
+## Integrate an existing CMake application
+
+Install the build above:
+
+```sh
+cmake --install build --prefix "$PWD/work/install"
+```
+
+In your application's `CMakeLists.txt`, after creating its target:
+
+```cmake
+find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)
+add_executable(my-app main.cpp)
+irveil_protect_target(my-app SEED 42 MAX_ADDS 64 REPORT)
+```
+
+Mark function definitions with `IRVEIL_PROTECT` as shown below. Configure the
+application with Clang 18 and `-DCMAKE_PREFIX_PATH=/absolute/path/to/work/install`.
+The `Plugin` component supplies the header and compiler plugin without linking
+`IRVeil::Core` or LLVM into the application or finding LLVM's development package.
+The plugin still requires the matching LLVM runtime used to build it.
+`IRVeil::Pass` locates the installed module; `IRVeil::Headers` exposes the header.
+
+`irveil_protect_target(target [SEED N] [MAX_ADDS N] [REPORT])` changes only that
+target's C/C++ compilation. Call it once after declaring a local executable,
+static/shared/module library or object library. Only annotated definitions are
+selected; other targets, callees and linked dependencies are independent.
+
+| Option | Default | Accepted values |
+| --- | --- | --- |
+| `SEED` | `0` | Unsigned decimal integer, `0..18446744073709551615` |
+| `MAX_ADDS` | `256` | Original additions per selected function, `1..4096` |
+| `REPORT` | Off | Flag; print configuration and module counters to stderr |
+
+Unknown, repeated, missing and out-of-range options fail during CMake
+configuration with an IRVeil diagnostic. Leading decimal zeros are accepted.
+Reports show `selected`, `changed` and `rewritten-adds` when a source is compiled.
+A selected function may have no eligible additions after Clang optimization.
+Inspect native output to check what survived codegen; reports alone show IR work.
+
+Compatibility remains Linux x86-64, Clang/LLVM 18 and CMake 3.20+. C-only and
+C++-only applications are supported. GCC/MSVC and LTO are outside the contract;
+the helper rejects visible CMake IPO settings. Sources added later or through
+generator expressions must also use Clang 18. Manually adding `-flto` remains
+outside the contract. Clang's `-save-temps` is not supported with these options:
+its assembler invocation rejects the plugin's LLVM flags, and its saved bitcode
+precedes the pass. Use explicit IR emission below.
+
+### Repeat the two-target example
+
+Starting at the repository root after installation, copy the independent
+[C++ application example](examples/cmake-consumer) and build both targets normally:
+
+```sh
+mkdir -p work
+cp -R examples/cmake-consumer work/application
+cmake -S work/application -B work/application-build \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/work/install" \
+  -DCMAKE_CXX_COMPILER=clang++-18 -DENABLE_IRVEIL=OFF
+cmake --build work/application-build --parallel 2
+./work/application-build/ordinary-app 4294967295 1
+./work/application-build/protected-app 4294967295 1
+llvm-objdump-18 -d --no-show-raw-insn --disassemble-symbols=protected_calculation \
+  work/application-build/protected-app > work/normal.asm
+
+# Only protected-app receives IRVeil after reconfiguration.
+cmake -S work/application -B work/application-build \
+  -DENABLE_IRVEIL=ON -DIRVEIL_SEED=42 -DIRVEIL_MAX_ADDS=2
+cmake --build work/application-build --parallel 2
+./work/application-build/ordinary-app 4294967295 1
+./work/application-build/protected-app 4294967295 1
+llvm-objdump-18 -d --no-show-raw-insn --disassemble-symbols=protected_calculation \
+  work/application-build/protected-app > work/protected.asm
+diff -u work/normal.asm work/protected.asm
+```
+
+All four executions must agree. The protected build reports
+`seed=42 max-adds=2 selected=1 changed=1 rewritten-adds=2`. The diff should return
+status 1 because the selected function changed. Inspect `ordinary_calculation`
+and `ordinary-app` as controls. In the LLVM 18.1.3 acceptance run, the selected
+function grew from 12 to 20 native instructions, excluding alignment; the ordinary
+function stayed at 12 and `ordinary-app` remained byte-identical. These are
+fixture observations, not resistance scores.
+
+An invalid configuration fails before compilation:
+
+```sh
+cmake -S work/application -B work/application-build -DIRVEIL_MAX_ADDS=0
+# IRVeil MAX_ADDS must be between 1 and 4096; got '0'
+cmake -S work/application -B work/application-build -DIRVEIL_MAX_ADDS=2
+```
+
+## Use while compiling directly
 
 Mark the functions you want to transform:
 
@@ -47,6 +139,24 @@ clang++-18 -O2 -I include -fpass-plugin=./build/IRVeilPass.so \
 ```
 
 `IRVEIL_PROTECT` adds a Clang annotation and prevents inlining of that function. It does not select its callees. The plugin runs at the optimizer-last extension point using seed `0` and a cap of `256` additions per selected function. Inspect the final binary: later code generation can simplify expressions, and an IR change alone does not prove increased analysis difficulty.
+
+For direct configuration, load the same plugin early so Clang can parse its
+`-mllvm` options. The CMake helper supplies this flag sequence:
+
+```sh
+clang++-18 -O2 -I work/install/include \
+  -Xclang -load -Xclang "$PWD/work/install/lib/irveil/IRVeilPass.so" \
+  -fpass-plugin="$PWD/work/install/lib/irveil/IRVeilPass.so" \
+  -mllvm -irveil-seed=42 -mllvm -irveil-max-adds=2 -mllvm -irveil-report \
+  -S -emit-llvm work/application/main.cpp -o work/protected.ll
+```
+
+This emits final optimizer IR before machine-code generation. LLVM symbol names
+and `"irveil.processed"` identify processed functions. Remove `-S -emit-llvm` and
+choose an executable output for native compilation. The path assumes the default
+`CMAKE_INSTALL_LIBDIR=lib`; adjust it if configured differently. Invalid direct
+options fail compilation with their name and range. The explicit `opt` pipeline
+below has its own configuration and does not inherit these Clang options.
 
 ## Use on LLVM IR
 
@@ -123,7 +233,7 @@ With `A` annotations, `I` inspected instructions, `K` rewritten additions, `U` o
 
 ## Validation
 
-The local suite checks integration through `clang` and `opt`, the library API, selection, deterministic configuration, expansion caps, repeat-run behavior and invalid options. It also installs the package into a temporary prefix, relocates that prefix, and builds and runs the standalone consumer through `find_package` outside the source tree with the same LLVM installation. Arithmetic checks cover exhaustive small-width inputs and reproducible boundary/random inputs at larger widths. Native fixture outputs are compared with ordinary builds. Structural IR verification and execution tests provide different evidence; neither alone proves equivalence for every possible C++ program.
+The local suite checks integration through `clang` and `opt`, the library API, selection, deterministic configuration, expansion caps, repeat-run behavior and invalid options. It installs and relocates the package, then builds and runs both the library consumer and the two-target compiler consumer outside the source tree. Compiler consumption includes C-only and C++-only applications with LLVM package discovery disabled. Arithmetic checks cover exhaustive small-width inputs and reproducible boundary/random inputs at larger widths. Native fixture outputs are compared with ordinary builds. Structural IR verification and execution tests provide different evidence; neither alone proves equivalence for every possible C++ program.
 
 Measure the included synthetic fixture, including a stripping-only baseline:
 

@@ -6,6 +6,10 @@
   reporting options, with an independent two-target C++ example.
 - State reverse-engineering resistance as the project's goal and distinguish
   current arithmetic diversification from future improvements.
+- Add bounded SSA P-code extraction, pinned SiMBA/GAMBA recovery evaluation and
+  an independent semantic recognition control using the v0.2.0 release artifacts.
+- Record two rejected transformation experiments, their semantic checks and
+  native costs; the released arithmetic algorithm remains unchanged.
 
 ## 0.2.1
 

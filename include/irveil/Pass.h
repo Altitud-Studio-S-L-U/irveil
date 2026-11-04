@@ -11,6 +11,7 @@ namespace irveil {
 struct Config {
   std::uint64_t seed = 0;
   std::uint32_t maxAddsPerFunction = 256;
+  std::uint32_t maxInstructionsPerFunction = 36864;
 };
 
 struct Statistics {
@@ -21,7 +22,9 @@ struct Statistics {
 };
 
 // Selects functions carrying Clang's annotate("irveil") in llvm.global.annotations.
-// A cap outside [1, 4096] returns an error before inspecting or mutating the module.
+// Invalid addition [1, 4096] or emitted-instruction [9, 36864] caps return an
+// error before inspecting or mutating the module. Each rewrite reserves its
+// exact prefix-network cost, including its two operand freezes (at most 35).
 // Functions rewritten by an earlier run are left unchanged, regardless of seed.
 llvm::Expected<Statistics> applyObfuscation(llvm::Module &module,
                                           Config config = {});

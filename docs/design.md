@@ -1,5 +1,43 @@
 # IRVeil v0.2 contract
 
+## Prefix-carry experiment — rejected for adoption
+
+This branch builds an experimental candidate, not the released algorithm described
+below. It must remain outside `main`: its higher cost did not prevent a bounded
+one-operation semantic recognizer from recovering the three transformed pure
+operations, as well as the three pure controls. The recognizer verified learned
+expressions with independent holdout samples and exact Z3 equivalence queries.
+
+For frozen operands, initialize `p=a XOR b` or `p=a OR b` (selected by seed),
+`g=a AND b`, and retain `bits=a XOR b`. For shifts 1,2,4,... strictly below the
+integer width, update `g=g OR (p AND (g<<shift))`; update
+`p=p AND (p<<shift)` only when another round needs it. Return `bits XOR (g<<1)`.
+After each round, generate/propagate cover twice as many adjacent bit positions;
+the last carry vector therefore yields addition modulo 2^w. Both variants were
+checked for every width 2..64 with Z3 and exhaustive small-width executions.
+
+Original operands are frozen once each; derived values are defined, shifts are
+constant and in range, and no overflow flags are copied. Selection, seed derivation,
+original-instruction snapshots and processed-function idempotence are preserved.
+Identical original operands use XOR propagation: this fixes an observed regression
+in valid `a+a` canonicalization controls without relaxing the control check.
+
+The experimental `Config::maxInstructionsPerFunction`, `opt` option
+`max-instructions` and Clang flag `-irveil-max-instructions` default to 36,864 and
+accept 9..36,864, validated before mutation. Reserve the exact cost before each
+replacement: `5*ceil(log2(w))+4` emitted instructions for XOR propagation and one
+more for OR, including two freezes. The maximum is 35 (net growth 34). The cap on
+original additions still applies independently. An operation that does not fit
+is skipped; a function with no rewrite is not marked processed and can be retried.
+
+The local suite passed all four groups after the control regression was fixed.
+Budget checks covered 304 real opt executions and 19,152 functions, including
+narrow-width and 64-bit boundaries. Separate algebra checks prove pure bitvector
+obligations; they are not Alive2 validation of LLVM semantics. The measured demo
+grew from 91 ordinary instructions to 810, with median runtime about 3.05 times
+its paired ordinary control. See the separate evaluation change for fixed attack
+versions, limits, timeouts, native costs and reproduction commands.
+
 ## Purpose and threat model
 
 IRVeil is a C++ library and LLVM pass plugin for selective compile-time obfuscation of C and C++ programs. The intended user owns the source and distributes a native executable. An analyst can read, modify, disassemble and run that executable and knows IRVeil's implementation. Seeds are reproducibility inputs, not secrets.

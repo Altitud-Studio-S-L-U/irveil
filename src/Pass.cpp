@@ -13,6 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <algorithm>
 #include <system_error>
 
 namespace irveil {
@@ -20,7 +21,7 @@ namespace {
 
 constexpr llvm::StringLiteral ProcessedAttribute = "irveil.processed";
 
-enum class AddIdentity { XorCarry, DoubleOrMinusXor };
+enum class AddIdentity { XorPropagate, OrPropagate };
 
 llvm::SmallVector<llvm::Function *, 16>
 selectFunctions(llvm::Module &module) {
@@ -101,22 +102,41 @@ collectAdds(llvm::Function &function, std::uint32_t cap) {
   return additions;
 }
 
-llvm::Value *emitXorCarry(llvm::IRBuilder<llvm::NoFolder> &builder,
-                          llvm::Value *left, llvm::Value *right) {
-  llvm::Value *common = builder.CreateAnd(left, right, "irveil.and");
-  llvm::Value *bits = builder.CreateXor(left, right, "irveil.xor");
-  llvm::Value *carry = builder.CreateShl(
-      common, llvm::ConstantInt::get(left->getType(), 1), "irveil.carry");
-  return builder.CreateAdd(bits, carry, "irveil.sum");
+unsigned prefixRounds(unsigned width) {
+  unsigned rounds = 0;
+  for (unsigned shift = 1; shift < width; shift <<= 1)
+    ++rounds;
+  return rounds;
 }
 
-llvm::Value *emitDoubleOrMinusXor(llvm::IRBuilder<llvm::NoFolder> &builder,
-                                  llvm::Value *left, llvm::Value *right) {
-  llvm::Value *bits = builder.CreateOr(left, right, "irveil.or");
-  llvm::Value *doubled = builder.CreateShl(
-      bits, llvm::ConstantInt::get(left->getType(), 1), "irveil.doubled");
-  llvm::Value *different = builder.CreateXor(left, right, "irveil.xor");
-  return builder.CreateSub(doubled, different, "irveil.sum");
+unsigned emittedInstructions(unsigned width, AddIdentity identity) {
+  return 5 * prefixRounds(width) + 4 +
+         (identity == AddIdentity::OrPropagate ? 1 : 0);
+}
+
+llvm::Value *emitPrefixCarry(llvm::IRBuilder<llvm::NoFolder> &builder,
+                            llvm::Value *left, llvm::Value *right,
+                            AddIdentity identity) {
+  const auto width = left->getType()->getIntegerBitWidth();
+  llvm::Value *bits = builder.CreateXor(left, right, "irveil.bits");
+  llvm::Value *propagate = identity == AddIdentity::OrPropagate
+                               ? builder.CreateOr(left, right, "irveil.propagate")
+                               : bits;
+  llvm::Value *generate = builder.CreateAnd(left, right, "irveil.generate");
+  for (unsigned shift = 1; shift < width; shift <<= 1) {
+    auto *amount = llvm::ConstantInt::get(left->getType(), shift);
+    llvm::Value *previous = builder.CreateShl(generate, amount, "irveil.previous");
+    llvm::Value *through = builder.CreateAnd(propagate, previous, "irveil.through");
+    generate = builder.CreateOr(generate, through, "irveil.generated");
+    // The final propagate value is unused; reserve and emit only live stages.
+    if ((shift << 1) < width) {
+      llvm::Value *neighbor = builder.CreateShl(propagate, amount, "irveil.neighbor");
+      propagate = builder.CreateAnd(propagate, neighbor, "irveil.propagated");
+    }
+  }
+  llvm::Value *carry = builder.CreateShl(
+      generate, llvm::ConstantInt::get(left->getType(), 1), "irveil.carry");
+  return builder.CreateXor(bits, carry, "irveil.sum");
 }
 
 void rewriteAdd(llvm::BinaryOperator &add, AddIdentity identity) {
@@ -129,9 +149,7 @@ void rewriteAdd(llvm::BinaryOperator &add, AddIdentity identity) {
   // so every generated use observes the same choice for an undef/poison value.
   llvm::Value *left = builder.CreateFreeze(add.getOperand(0), "irveil.left");
   llvm::Value *right = builder.CreateFreeze(add.getOperand(1), "irveil.right");
-  llvm::Value *replacement = identity == AddIdentity::XorCarry
-                                 ? emitXorCarry(builder, left, right)
-                                 : emitDoubleOrMinusXor(builder, left, right);
+  llvm::Value *replacement = emitPrefixCarry(builder, left, right, identity);
 
   replacement->takeName(&add);
   add.replaceAllUsesWith(replacement);
@@ -145,6 +163,11 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "IRVeil maxAddsPerFunction must be between 1 and 4096");
+  if (config.maxInstructionsPerFunction < 9 ||
+      config.maxInstructionsPerFunction > 36864)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "IRVeil maxInstructionsPerFunction must be between 9 and 36864");
 
   Statistics statistics;
   auto functions = selectFunctions(module);
@@ -159,16 +182,30 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
       continue;
 
     std::uint64_t state = functionSeed(function->getName(), config.seed);
+    std::uint32_t remaining = config.maxInstructionsPerFunction;
+    std::uint64_t rewritten = 0;
     for (llvm::BinaryOperator *add : additions) {
-      const auto identity = (nextRandom(state) & 1) != 0
-                                ? AddIdentity::XorCarry
-                                : AddIdentity::DoubleOrMinusXor;
+      auto identity = (nextRandom(state) & 1) != 0
+                          ? AddIdentity::XorPropagate
+                          : AddIdentity::OrPropagate;
+      // Equal defined operands have no XOR propagation. Expose that zero so
+      // ordinary optimization can still reduce a+a to a single shift.
+      if (add->getOperand(0) == add->getOperand(1))
+        identity = AddIdentity::XorPropagate;
+      const auto cost = emittedInstructions(add->getType()->getIntegerBitWidth(),
+                                            identity);
+      if (cost > remaining)
+        continue;
+      remaining -= cost;
       rewriteAdd(*add, identity);
+      ++rewritten;
     }
 
+    if (rewritten == 0)
+      continue;
     function->addFnAttr(ProcessedAttribute);
     ++statistics.changedFunctions;
-    statistics.rewrittenAdds += additions.size();
+    statistics.rewrittenAdds += rewritten;
   }
   return statistics;
 }
@@ -184,7 +221,8 @@ llvm::PreservedAnalyses IRVeilPass::run(
                  << " max-adds=" << config_.maxAddsPerFunction
                  << " selected=" << result->selectedFunctions
                  << " changed=" << result->changedFunctions
-                 << " rewritten-adds=" << result->rewrittenAdds << '\n';
+                 << " rewritten-adds=" << result->rewrittenAdds
+                 << " max-instructions=" << config_.maxInstructionsPerFunction << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

@@ -264,11 +264,14 @@ work/simba-evaluation/venv/bin/python tools/re/synthesize.py \
 ## Rebuild and compare the two experimental sources
 
 Run the acquisition/setup commands above first from an evaluation checkout that
-contains these tools. Both experiments are source-only draft PRs outside `main`:
+contains these tools. Both experiments are rejected source-only PRs outside `main`:
 [composed #5](https://github.com/Altitud-Studio-S-L-U/irveil/pull/5), commit
 `61bc636ff1bd52851391053aac9b96e877547c56`, and
 [prefix #6](https://github.com/Altitud-Studio-S-L-U/irveil/pull/6), commit
-`52813541196ec63619ed300277dc4aacddea04a0`. Use fresh directories. Set the two
+`52813541196ec63619ed300277dc4aacddea04a0`. Their work branches are removed after
+rejection; the tags `experiment/composed-mba-2026-11-04` and
+`experiment/prefix-carry-2026-11-04` preserve those exact source commits.
+Use fresh directories. Set the two
 tool-home paths to the verified installations obtained earlier:
 
 ```sh
@@ -278,10 +281,12 @@ export JAVA_HOME=/absolute/path/to/jdk-25
 build_candidate() {
   candidate_name="$1"
   candidate_commit="$2"
+  candidate_tag="$3"
   candidate_source="$PWD/work/candidates/$candidate_name/source"
   candidate_build="$PWD/work/candidates/$candidate_name/build"
   mkdir -p "$PWD/work/candidates/$candidate_name" || return
   git clone --no-checkout https://github.com/Altitud-Studio-S-L-U/irveil.git "$candidate_source" || return
+  git -C "$candidate_source" fetch origin "refs/tags/$candidate_tag:refs/tags/$candidate_tag" || return
   git -C "$candidate_source" checkout "$candidate_commit" || return
   cmake -S "$candidate_source" -B "$candidate_build" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-18 \
@@ -289,8 +294,8 @@ build_candidate() {
   cmake --build "$candidate_build" --parallel 2 || return
   (cd "$candidate_build" && ctest --output-on-failure)
 }
-build_candidate composed 61bc636ff1bd52851391053aac9b96e877547c56
-build_candidate prefix 52813541196ec63619ed300277dc4aacddea04a0
+build_candidate composed 61bc636ff1bd52851391053aac9b96e877547c56 experiment/composed-mba-2026-11-04
+build_candidate prefix 52813541196ec63619ed300277dc4aacddea04a0 experiment/prefix-carry-2026-11-04
 
 evaluate_candidate() {
   candidate_name="$1"

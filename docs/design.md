@@ -1,5 +1,34 @@
 # IRVeil v0.2 contract
 
+## Composed MBA experiment — rejected for adoption
+
+This branch builds an experimental candidate, not the released algorithm described
+below. The candidate was rejected: GAMBA recovered the same six supported native
+fixture operations as v0.2.0 at O2/O3, while the measured demo function grew from
+146 to 221 native instructions. It must remain outside `main`.
+
+For frozen original operands, set `u=a XOR b` and `v=(a AND b)<<1`; emit one of the
+two identities below over `u,v` rather than `a,b`. Two applications of modular
+addition prove the result equals `a+b` at every supported width. Original operands
+are frozen exactly once each; derived values are defined. No overflow flags are
+copied, shifts are by one at widths >=2, and original poison/undef is refined by
+freeze. This preserves defined executions; it does not repair source UB.
+
+The experimental `Config::maxInstructionsPerFunction`, explicit pipeline option
+`max-instructions` and Clang flag `-irveil-max-instructions` default to 36,864 and
+accept 9..36,864. Invalid configuration fails before mutation. Reserve nine emitted
+instructions per replacement (including freezes), so rewrites are bounded by
+`min(max-adds, floor(max-instructions/9))`; net growth is at most eight per rewrite.
+Selection, seed derivation and processed-function idempotence remain unchanged.
+Tests change only the previous five-instruction expectation to this explicit
+experimental bound, retaining semantic, selection and repeat-run checks.
+
+The candidate's local suite passed all four groups, including exhaustive small
+widths, larger boundary/random cases, poison/undef/flags and both installed
+consumers. Separate Z3 algebra checks found no counterexample for both strategies
+at every width 2..64 (126 queries). These bitvector checks are not Alive2 validation.
+The evaluation branch contains the pinned attacks and reproducible comparison.
+
 ## Purpose and threat model
 
 IRVeil is a C++ library and LLVM pass plugin for selective compile-time obfuscation of C and C++ programs. The intended user owns the source and distributes a native executable. An analyst can read, modify, disassemble and run that executable and knows IRVeil's implementation. Seeds are reproducibility inputs, not secrets.

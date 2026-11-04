@@ -13,6 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <algorithm>
 #include <system_error>
 
 namespace irveil {
@@ -129,9 +130,15 @@ void rewriteAdd(llvm::BinaryOperator &add, AddIdentity identity) {
   // so every generated use observes the same choice for an undef/poison value.
   llvm::Value *left = builder.CreateFreeze(add.getOperand(0), "irveil.left");
   llvm::Value *right = builder.CreateFreeze(add.getOperand(1), "irveil.right");
+  // Compose the addition identity once. All generated values are defined after
+  // the original operands have been frozen, so these uses need no new freezes.
+  llvm::Value *different = builder.CreateXor(left, right, "irveil.inner.xor");
+  llvm::Value *common = builder.CreateAnd(left, right, "irveil.inner.and");
+  llvm::Value *carry = builder.CreateShl(
+      common, llvm::ConstantInt::get(left->getType(), 1), "irveil.inner.carry");
   llvm::Value *replacement = identity == AddIdentity::XorCarry
-                                 ? emitXorCarry(builder, left, right)
-                                 : emitDoubleOrMinusXor(builder, left, right);
+                                 ? emitXorCarry(builder, different, carry)
+                                 : emitDoubleOrMinusXor(builder, different, carry);
 
   replacement->takeName(&add);
   add.replaceAllUsesWith(replacement);
@@ -145,6 +152,11 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "IRVeil maxAddsPerFunction must be between 1 and 4096");
+  if (config.maxInstructionsPerFunction < 9 ||
+      config.maxInstructionsPerFunction > 36864)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "IRVeil maxInstructionsPerFunction must be between 9 and 36864");
 
   Statistics statistics;
   auto functions = selectFunctions(module);
@@ -154,7 +166,11 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
       continue;
 
     // Snapshot only original candidates; generated adds cannot enter this run.
-    auto additions = collectAdds(*function, config.maxAddsPerFunction);
+    // Each rewrite emits at most nine instructions (two freezes plus seven
+    // arithmetic/bitwise operations); reserve the complete cost before mutation.
+    const auto cap = std::min(config.maxAddsPerFunction,
+                             config.maxInstructionsPerFunction / 9);
+    auto additions = collectAdds(*function, cap);
     if (additions.empty())
       continue;
 
@@ -184,7 +200,8 @@ llvm::PreservedAnalyses IRVeilPass::run(
                  << " max-adds=" << config_.maxAddsPerFunction
                  << " selected=" << result->selectedFunctions
                  << " changed=" << result->changedFunctions
-                 << " rewritten-adds=" << result->rewrittenAdds << '\n';
+                 << " rewritten-adds=" << result->rewrittenAdds
+                 << " max-instructions=" << config_.maxInstructionsPerFunction << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

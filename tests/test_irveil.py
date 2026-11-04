@@ -185,11 +185,72 @@ class IRVeilTests(unittest.TestCase):
                 self.assertEqual(len(re.findall(r"add i32 %a, %b", body)), 8 - rewritten)
                 self.assertEqual(len(re.findall(r"\bfreeze i32\b", body)), 2 * rewritten)
                 self.assertGreater(len(instructions(body)), len(instructions(original)))
-                self.assertLessEqual(len(instructions(body)), len(instructions(original)) + 5 * rewritten)
+                self.assertLessEqual(len(instructions(body)), len(instructions(original)) + 8 * rewritten)
                 other = function_body(transformed, "flags")
                 other_rewritten = min(cap, 3)
                 self.assertEqual(len(re.findall(r"\bfreeze i32\b", other)), 2 * other_rewritten,
                                  "The cap applies independently to each selected function")
+
+    def test_emitted_instruction_budget_is_independent_and_validated(self):
+        source = self.fixture("selection.ll")
+        original = function_body(self.transform(source, "verify"), "protected")
+        for budget, rewritten in [(9, 1), (17, 1), (18, 2), (36864, 8)]:
+            with self.subTest(budget=budget):
+                pipeline = f"irveil<seed=17;max-adds=4096;max-instructions={budget}>"
+                transformed = self.transform(source, pipeline)
+                body = function_body(transformed, "protected")
+                self.assertEqual(len(re.findall(r"\bfreeze i32\b", body)), 2 * rewritten)
+                emitted = len(instructions(body)) - len(instructions(original)) + rewritten
+                self.assertLessEqual(emitted, budget)
+                self.assertLessEqual(emitted, 9 * rewritten)
+                repeated = self.transform(transformed, "irveil<max-instructions=36864>")
+                self.assertEqual(canonical_ir(transformed), canonical_ir(repeated))
+        capped = self.transform(source, "irveil<max-adds=1;max-instructions=36864>")
+        self.assertEqual(len(re.findall(r"\bfreeze i32\b", function_body(capped, "protected"))), 2)
+        for budget in [0, 8, 36865]:
+            result = execute([self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                              f"-passes=irveil<max-instructions={budget}>",
+                              "-S", "-o", "-", "-"], input_text=source)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertTrue(result.stderr.strip())
+
+    def test_poison_and_undef_are_frozen_before_composition(self):
+        names = ["poison_operand", "undef_operand", "frozen_input"]
+        source = annotations(names) + """
+define i8 @poison_operand() {
+  %result = add i8 poison, 1
+  ret i8 %result
+}
+define i8 @undef_operand() {
+  %result = add i8 undef, 1
+  ret i8 %result
+}
+define i8 @frozen_input(i8 %a) {
+  %stable = freeze i8 %a
+  %result = add nsw nuw i8 %stable, 0
+  ret i8 %result
+}
+define i32 @main() {
+  %choice = freeze i8 poison
+  %actual = call i8 @frozen_input(i8 %choice)
+  %equal = icmp eq i8 %actual, %choice
+  %failed = xor i1 %equal, true
+  %status = zext i1 %failed to i32
+  ret i32 %status
+}
+"""
+        for seed in [0, 1, 42]:
+            transformed = self.transform(source, f"irveil<seed={seed}>")
+            for name, operand in [("poison_operand", "poison"), ("undef_operand", "undef")]:
+                body = function_body(transformed, name)
+                uses = [line for line in body.splitlines() if operand in line]
+                self.assertEqual(len(uses), 1)
+                self.assertRegex(uses[0], rf"freeze i8 {operand}")
+            self.assertNotRegex(function_body(transformed, "frozen_input"), r"\b(?:nsw|nuw|exact)\b")
+            path = self.work / f"poison-defined-{seed}.ll"
+            path.write_text(transformed, encoding="utf-8")
+            self.checked([self.llvm / "lli", path])
 
     def test_default_cap_and_every_documented_scalar_width(self):
         names = [f"width{width}" for width in range(2, 65)] + ["default_cap"]
@@ -276,6 +337,8 @@ class IRVeilTests(unittest.TestCase):
             "seed=18446744073709551616", "max-adds=0", "max-adds=4097",
             "max-adds=-1", "max-adds=1.5", "max-adds=4294967296",
             "unknown=1", "seed=1;seed=2", "max-adds=1;max-adds=2", "seed=1;",
+            "max-instructions=0", "max-instructions=8", "max-instructions=36865",
+            "max-instructions=9;max-instructions=18", "max-instructions=-1",
         ]
         for option in options:
             with self.subTest(option=option):
@@ -357,13 +420,25 @@ class IRVeilTests(unittest.TestCase):
                 ("-irveil-seed=0x10", "unsigned decimal"),
                 ("-irveil-seed=18446744073709551616", "unsigned decimal"),
                 ("-irveil-max-adds=0", "1..4096"),
-                ("-irveil-max-adds=4097", "1..4096")]:
+                ("-irveil-max-adds=4097", "1..4096"),
+                ("-irveil-max-instructions=0", "9..36864"),
+                ("-irveil-max-instructions=8", "9..36864"),
+                ("-irveil-max-instructions=36865", "9..36864")]:
             with self.subTest(option=option):
                 result = execute([*command, "-mllvm", option])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("IRVeil:", result.stderr)
                 self.assertIn(diagnostic, result.stderr)
                 self.assertEqual(result.stdout, "")
+
+        for budget, rewritten in [(9, 1), (17, 1), (18, 2)]:
+            result = self.checked([*command, "-mllvm", f"-irveil-max-instructions={budget}",
+                                   "-mllvm", "-irveil-report"])
+            self.assertIn(f"rewritten-adds={rewritten} max-instructions={budget}", result.stderr)
+        result = self.checked([*command, "-mllvm", "-irveil-max-instructions=36864",
+                               "-mllvm", "-irveil-report"])
+        self.assertIn("max-instructions=36864", result.stderr)
+        self.assertRegex(result.stderr, r"rewritten-adds=[1-9][0-9]*")
 
         # Explicit opt pipelines retain their own configuration, even if the
         # command-line settings used by Clang's extension point are present.

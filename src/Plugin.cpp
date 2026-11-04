@@ -23,6 +23,10 @@ llvm::cl::opt<std::string> ClangMaxAdds(
 llvm::cl::opt<bool> ClangReport(
     "irveil-report", llvm::cl::desc("Report IRVeil configuration and counters"),
     llvm::cl::init(false));
+llvm::cl::opt<std::string> ClangMaxInstructions(
+    "irveil-max-instructions",
+    llvm::cl::desc("IRVeil emitted instructions per function (9..36864)"),
+    llvm::cl::init("36864"));
 
 bool parseUnsignedDecimal(llvm::StringRef text, std::uint64_t &value) {
   if (text.empty())
@@ -42,6 +46,7 @@ bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
 
   bool seenSeed = false;
   bool seenCap = false;
+  bool seenInstructions = false;
   while (!name.empty()) {
     const auto option = name.split(';');
     const auto keyValue = option.first.split('=');
@@ -56,6 +61,10 @@ bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
                value <= 4096) {
       config.maxAddsPerFunction = static_cast<std::uint32_t>(value);
       seenCap = true;
+    } else if (keyValue.first == "max-instructions" && !seenInstructions &&
+               value >= 9 && value <= 36864) {
+      config.maxInstructionsPerFunction = static_cast<std::uint32_t>(value);
+      seenInstructions = true;
     } else {
       return false;
     }
@@ -78,6 +87,12 @@ irveil::Config clangConfig() {
     llvm::report_fatal_error(
         "IRVeil: -irveil-max-adds must be a decimal integer in 1..4096", false);
   config.maxAddsPerFunction = static_cast<std::uint32_t>(cap);
+  if (!parseUnsignedDecimal(ClangMaxInstructions.getValue(), cap) ||
+      cap < 9 || cap > 36864)
+    llvm::report_fatal_error(
+        "IRVeil: -irveil-max-instructions must be a decimal integer in 9..36864",
+        false);
+  config.maxInstructionsPerFunction = static_cast<std::uint32_t>(cap);
   return config;
 }
 

@@ -7,7 +7,7 @@ Name branches by purpose: `feat/...`, `fix/...`, `docs/...`, `test/...` or
 agent names. Remove work branches after their PR is merged or rejected. Preserve
 referenced rejected experiments with explicit tags before deleting their branches.
 
-Use the LLVM 18 setup documented in the README. Run the build and CTest locally and include the actual outcomes in the PR. This repository has no CI/CD workflows. Distinguish passing checks, existing failures and checks you could not execute.
+Use the LLVM 18 setup documented in the README. Run the build and CTest locally and include the actual outcomes in the PR; the CI workflow repeats them on Ubuntu 24.04 with LLVM 18. Distinguish passing checks, existing failures and checks you could not execute.
 
 A transformation needs a semantic argument, an explicit supported-input contract, relevant boundary and differential tests, and final-binary measurements. Treat LLVM poison/undef values, arithmetic flags, debug information and analysis invalidation as part of correctness. Preserve valid tests; do not weaken assertions or silently skip failures to obtain a passing result.
 

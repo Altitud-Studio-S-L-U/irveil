@@ -1,5 +1,10 @@
 # IRVeil
 
+[![CI](https://github.com/Altitud-Studio-S-L-U/irveil/actions/workflows/ci.yml/badge.svg)](https://github.com/Altitud-Studio-S-L-U/irveil/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Altitud-Studio-S-L-U/irveil/actions/workflows/codeql.yml/badge.svg)](https://github.com/Altitud-Studio-S-L-U/irveil/actions/workflows/codeql.yml)
+[![LLVM 18](https://img.shields.io/badge/LLVM-18-262d3a?logo=llvm)](docs/design.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 ```text
  ___ ____  __     __   _ _
 |_ _|  _ \ \ \   / /__(_) |
@@ -24,7 +29,7 @@ cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 ```
 
-Configuration does not download dependencies. This repository deliberately has no CI/CD workflows; checks run locally.
+Configuration does not download dependencies. Every pull request runs this build and CTest in Release and Debug on Ubuntu 24.04 with Clang/LLVM 18 from the distribution's packages, and a CodeQL scan of the C++, Python and Java sources.
 
 ## Integrate an existing CMake application
 

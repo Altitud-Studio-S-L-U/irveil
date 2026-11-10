@@ -1,1 +1,6 @@
 * text=auto eol=lf
+
+# The product is the C++ library and pass plugin. The Python test drivers and the
+# Python and Java reverse-engineering harness stay out of the language statistics.
+tests/*.py linguist-detectable=false
+tools/** linguist-detectable=false

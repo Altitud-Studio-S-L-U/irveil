@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # CMake and Python checks use the system toolchain; only the pinned workflow actions need updates.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

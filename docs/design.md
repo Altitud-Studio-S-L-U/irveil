@@ -59,7 +59,7 @@ Expose counters for selected/changed functions and rewritten additions through t
 3. Compile the same owned fixtures with and without the plugin; compare observable results. Exercise branches, loops, multiple selected functions, unselected functions, wraparound, signed defined inputs and scalar-width exclusions. Run AddressSanitizer/UndefinedBehaviorSanitizer where compatible.
 4. Verify selection, bounded expansion, deterministic output, option rejection, empty/unannotated modules and repeat-pass idempotence. Compare seeds on a fixture with enough eligible operations without claiming a different output is guaranteed for every input.
 5. Inspect optimized native disassembly and count instructions in the selected symbol, compared with the same compiler/options and a stripping-only baseline. If the backend removes a transformation, report it; IR growth alone is not evidence of final-binary change. Publish measured overhead with the exact workload and environment. No universal performance or RE-resistance claim follows from one fixture.
-6. Inspect staged files, run local checks and merge through a PR. No CI/CD workflows, binaries, downloaded toolchains, benchmark output or build trees are committed. Publish source only after validation. Keep a professional README, MIT license, contributing guide and private vulnerability reporting route.
+6. Inspect staged files, run local checks and merge through a PR whose CI build and CTest pass on Ubuntu 24.04 with LLVM 18. No binaries, downloaded toolchains, benchmark output or build trees are committed. Publish source only after validation. Keep a professional README, MIT license, contributing guide and private vulnerability reporting route.
 
 ## Delivery sequence
 

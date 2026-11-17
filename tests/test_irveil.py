@@ -345,6 +345,91 @@ exit:
         self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
             self.transform(source, "irveil<transforms=cfg+loops+switch>")))
 
+    def test_constant_encoding_values_caps_and_seed(self):
+        source = annotations(["f"]) + '''
+define i64 @f(i64 %a) {
+  %x = xor i64 %a, -9223372036854775808
+  %y = add i64 %x, 9223372036854775807
+  %z = sub i64 %y, -1
+  ret i64 %z
+}
+define i32 @main() {
+  %v = call i64 @f(i64 0)
+  %bad = icmp ne i64 %v, 0
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        outputs = []
+        for seed in [0, 42, 18446744073709551615]:
+            pipeline = f"irveil<transforms=constants;seed={seed}>"
+            output = self.transform(source, pipeline)
+            self.assertEqual(len(re.findall(r"%irveil.constant\d* =", output)), 3)
+            self.assertEqual(canonical_ir(output), canonical_ir(self.transform(output, pipeline)))
+            path = self.work / f"constants-{seed}.ll"
+            path.write_text(output)
+            self.checked([self.llvm / "lli", path])
+            outputs.append(output)
+        self.assertEqual(len(set(outputs)), 3)
+        output = self.transform(source, "irveil<transforms=constants;max-constants=1>")
+        self.assertEqual(len(re.findall(r"%irveil.constant\d* =", output)), 1)
+
+    def test_string_encoding_scalar_loads_metadata_and_budget(self):
+        source = annotations(["f", "g"]) + '''
+@s = private unnamed_addr constant [3 x i8] c"Az\\00"
+define i8 @f(i64 %index) {
+  %p = getelementptr [3 x i8], ptr @s, i64 0, i64 %index
+  %v = load i8, ptr %p, !range !0
+  ret i8 %v
+}
+define i8 @g() {
+  %v = load i8, ptr getelementptr ([3 x i8], ptr @s, i64 0, i64 1)
+  ret i8 %v
+}
+define i32 @main() {
+  %a = call i8 @f(i64 0)
+  %b = call i8 @g()
+  %c = call i8 @f(i64 2)
+  %x = xor i8 %a, 65
+  %y = xor i8 %b, 122
+  %z = or i8 %x, %y
+  %r = or i8 %z, %c
+  %exit = zext i8 %r to i32
+  ret i32 %exit
+}
+!0 = !{i8 0, i8 123}
+'''
+        for seed in [0, 1, 42]:
+            pipeline = f"irveil<transforms=strings;seed={seed}>"
+            output = self.transform(source, pipeline)
+            self.assertIn('!irveil.encoded', output)
+            self.assertNotIn('!range', function_body(output, "f"))
+            self.assertNotIn('c"Az\\00"', output)
+            self.assertEqual(len(re.findall(r"%irveil.string.byte\d* =", output)), 2)
+            self.assertEqual(canonical_ir(output), canonical_ir(self.transform(output, pipeline)))
+            path = self.work / f"strings-{seed}.ll"
+            path.write_text(output)
+            self.checked([self.llvm / "lli", path])
+        original = canonical_ir(self.transform(source, "verify"))
+        self.assertEqual(original, canonical_ir(self.transform(source,
+            "irveil<transforms=strings;max-string-bytes=2>")))
+
+    def test_strings_reject_escapes_shared_volatile_atomic_and_wide_reads(self):
+        cases = [
+            ('declare void @escape(ptr)\n', 'call void @escape(ptr @s)'),
+            ('@alias = private alias [3 x i8], ptr @s\n', '%v = load i8, ptr @s'),
+            ('', '%v = load volatile i8, ptr @s'),
+            ('', '%v = load atomic i8, ptr @s unordered, align 1'),
+            ('', '%v = load i16, ptr @s, align 1'),
+            ('define i8 @unselected() { %v = load i8, ptr @s\n ret i8 %v }\n', '%v = load i8, ptr @s'),
+        ]
+        for prefix, use in cases:
+            with self.subTest(use=use, prefix=prefix):
+                source = (annotations(["f"]) + '@s = private constant [3 x i8] c"Az\\00"\n' +
+                          prefix + 'define void @f() {\n' + use + '\n ret void\n}\n')
+                self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+                    self.transform(source, "irveil<transforms=strings>")))
+
     def test_per_function_cap_and_bounded_expansion(self):
         source = self.fixture("selection.ll")
         original = function_body(self.transform(source, "verify"), "protected")

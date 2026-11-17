@@ -2,6 +2,7 @@
 #include "InstructionTransform.h"
 #include "Config.h"
 #include "ControlFlowTransform.h"
+#include "DataTransform.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -108,14 +109,18 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
   Statistics statistics;
   auto functions = selectFunctions(module);
   statistics.selectedFunctions = functions.size();
+  llvm::SmallVector<llvm::Function *, 16> eligible;
   for (llvm::Function *function : functions) {
     if (function->hasFnAttribute(ProcessedAttribute))
       continue;
+    eligible.push_back(function);
 
     // Snapshot only original candidates; generated adds cannot enter this run.
     auto candidates = collectCandidates(*function, config.maxAddsPerFunction,
                                         effectiveTransforms(config));
     std::uint64_t state = functionSeed(function->getName(), config.seed);
+    // Encode original operands before arithmetic emission, never generated ones.
+    const bool constantsChanged = encodeConstants(*function, config, state, statistics);
     for (const Candidate &candidate : candidates) {
       const auto selector = nextRandom(state);
       switch (candidate.kind) {
@@ -130,11 +135,13 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     }
 
     const bool controlChanged = rewriteControlFlow(*function, config, statistics);
-    if (!candidates.empty() || controlChanged) {
+    if (!candidates.empty() || controlChanged || constantsChanged) {
       function->addFnAttr(ProcessedAttribute);
-      ++statistics.changedFunctions;
     }
   }
+  encodeStrings(module, eligible, config, statistics);
+  for (auto *function : eligible)
+    if (function->hasFnAttribute(ProcessedAttribute)) ++statistics.changedFunctions;
   return statistics;
 }
 

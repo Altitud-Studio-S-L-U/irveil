@@ -198,6 +198,30 @@ class CompilerPackageTests(unittest.TestCase):
         self.assertRegex(result.stdout + result.stderr, r"constants=[1-9]")
         self.checked([build / "app"])
 
+    def test_helper_isolates_parser_state_and_rejects_cmake_list_separators(self):
+        source = self.work / "parser isolation source"
+        source.mkdir()
+        (source / "main.cpp").write_text("int main() { return 0; }\n")
+        preamble = (
+            "cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
+            "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\n"
+            "add_executable(app main.cpp)\n")
+        inherited = ("PROFILE", "TRANSFORMS", "MAX_EDGES", "MAX_SWITCH_CASES",
+                     "MAX_CONSTANTS", "MAX_STRING_BYTES")
+        (source / "CMakeLists.txt").write_text(preamble +
+            "".join(f"set(seen_{option} TRUE)\n" for option in inherited) +
+            "irveil_protect_target(app PROFILE general TRANSFORMS cfg+loops "
+            "MAX_EDGES 1 MAX_SWITCH_CASES 1 MAX_CONSTANTS 1 MAX_STRING_BYTES 1)\n")
+        with self.subTest(inherited=True):
+            self.require_configured(self.configure(source, self.work / "inherited parser build"))
+        for index, text in enumerate(["adds;cfg", ";adds", "adds;", "adds+;cfg"]):
+            with self.subTest(text=text):
+                (source / "CMakeLists.txt").write_text(preamble +
+                    f'irveil_protect_target(app TRANSFORMS "{text}")\n')
+                rejected = self.configure(source, self.work / f"list separator-{index}")
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("TRANSFORMS", rejected.stderr)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

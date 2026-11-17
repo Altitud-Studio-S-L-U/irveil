@@ -135,7 +135,7 @@ opt-18 -load-pass-plugin ./build/IRVeilPass.so \
 | `loops` | Route natural backedges identified by dominators; PHIs and loop metadata follow the new predecessor; no loop unrolling or state dispatcher |
 | `switch` | Freeze the condition once, then emit an equality ladder with repaired PHIs, including repeated destinations; linear comparisons can cost more than a jump table |
 | `constants` | Split original integer literals into two XOR operands in arithmetic, integer comparisons and returns; one extra IR instruction per operand, readily constant-folded |
-| `strings` | XOR private constant C byte arrays and decode each ordinary scalar `i8` load; requires all uses to end in selected functions, with no escaping pointers, calls, aliases, wide/atomic/volatile loads or mutable storage |
+| `strings` | XOR private constant C byte arrays whose uses end in selected ordinary scalar `i8` loads. Modules with nonempty assembly text are skipped because assembly can reference symbols by name. |
 | `flatten` | Experimental whole-function SSA dispatcher for a restricted branch CFG; spills crossing registers/PHIs to private stack slots, with preflight block/instruction limits; additional memory traffic and dispatch overhead can be substantial |
 
 Use `transforms=none` to disable work. Unknown/repeated families and malformed or
@@ -200,8 +200,9 @@ runtime calls or volatile accesses are added. Private spills are ordinary memory
 
 EH, block addresses, GC, varargs/non-C calling conventions, naked functions,
 dynamic/non-entry/inalloca allocas, preallocated/inalloca parameters,
-indirect/inline-asm/non-C/restricted calls, `musttail`, stack/frame/register queries
-and manipulation and experimental/coroutine/EH/varargs intrinsics exclude the function. Input
+indirect/inline-asm/non-C/restricted calls, operand bundles and `musttail`
+exclude the function. Only the intrinsic families listed in the
+[design contract](docs/design.md#bounded-flattening-experiment) are accepted. Input
 switches are skipped unless `switch` is explicitly enabled to lower them first.
 Flattening runs after the other structural families and never rewrites its own
 dispatcher in that run. Its budgets apply to that current CFG, independently of
@@ -216,6 +217,11 @@ The [measured experiment](docs/re-evaluation.md#bounded-flattening-experiment)
 records native/reoptimized survival, Ghidra recovery and partial-analysis limits,
 and roughly 2.2–2.4x runtime on its synthetic workload. It does not justify a
 default change or a general resistance claim.
+
+For cost-sensitive experiments, the [comparison of block limits and LLVM
+promotion](docs/re-evaluation.md#reducing-the-cost-of-flattening) shows how much
+the result depends on function selection. On this corpus a five-block cap kept
+two of the five functions and brought runtime within 6% of the ordinary build.
 
 ## Transformation contract
 

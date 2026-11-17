@@ -380,8 +380,8 @@ atomic calls, parallel PHIs, critical edges and reoptimization; behavior checks
 remain distinct from the observations about decompilation below.
 
 At both O2/O3, five functions flattened: branch logic, a loop, loop-carried PHIs,
-possibly aliased memory and recursive source. LLVM had already converted the
-recursive source to a loop in these optimized builds. Module totals were 34
+possibly aliased memory and recursive source. LLVM converted one recursive path
+to a loop. The other path still calls the same function. Module totals were 34
 dispatched blocks, 42 private spill slots and 199 net additional IR instructions.
 The input switch and straight-line selected function were unsupported controls;
 the unselected function was never eligible. No function exhausted its budget.
@@ -466,3 +466,59 @@ Fixture SHA-256:
 `61e655d993425ecd87293e57d3c751cffe25b28bc973309f867231b6e30b735d`.
 Final structured evidence and raw exports stay in `work/flatten-evaluation-final/`;
 the earlier local run is diagnostic evidence preceding the ELF-symbol cost fix.
+
+### Reducing the cost of flattening
+
+Two follow-up experiments used LLVM 18.1.3, the same source, seed and 633 output
+rows. Each timing below is the median wall time of 12 runs of two million
+iterations after warmup, pinned to one CPU with balanced variant order. Each
+variant produced the same benchmark checksum. Compare within each experiment.
+
+| Experiment | Variant | O2, ms | O3, ms | Functions flattened |
+| --- | --- | ---: | ---: | ---: |
+| Promote stack slots | Ordinary | 74.9 | 74.0 | 0 |
+| | Flatten | 173.4 | 170.8 | 5 |
+| | Flatten then LLVM `mem2reg` | 151.5 | 148.4 | 5 |
+| | Flatten then full reoptimization | 159.9 | 158.4 | 5 initially |
+| Limit coverage | Ordinary | 74.5 | 76.6 | 0 |
+| | Flatten, block cap 16 | 175.6 | 179.6 | 5 |
+| | Flatten, block cap 5 | 77.6 | 80.7 | 2 |
+
+For the first experiment all four variants were compiled from emitted IR with
+the same backend flags. To reproduce the promotion step on the IR saved by the
+[flattening protocol](re-validation.md#bounded-flattening-protocol), run:
+
+```sh
+opt-18 -passes='function(mem2reg)' -verify-each -S O2-ir/flatten.ll -o promoted.ll
+clang++-18 -O2 -Xclang -disable-llvm-passes -fno-pie -no-pie promoted.ll -o promoted
+./promoted --bench 2000000
+```
+
+Use the corresponding O3 IR and backend level for the O3 comparison. Promotion
+reduced paired runtime by about 13% and the total size of the five ELF symbols
+from 1,569 to 1,395 bytes. The recursive function grew from 492 to 515 bytes.
+The five IR bodies went from 319 to 175 instructions and all 42 stack slots
+disappeared. PHI incoming entries grew from 34 to 298. A module-wide promotion
+also considers user allocas. These results support using the standard LLVM pass
+as an explicit downstream experiment. Integrating it into IRVeil would require
+accounting for PHI operands and preserving the function selection boundary.
+See the [LLVM 18 description of mem2reg](https://releases.llvm.org/18.1.8/docs/Passes.html#mem2reg-promote-memory-to-register).
+
+Ghidra 12.2 analyzed both stripped promoted binaries (16 function records).
+The branch, loop-carried-PHI and recursive cases had unrecovered jump tables
+at both levels. The first two also had incorrect void return types. The six
+affected records are excluded from claims about difficulty. Native outputs and
+measurements use the complete executable and symbol ranges.
+
+The second experiment used direct source builds and the existing Clang option
+`-mllvm -irveil-max-flatten-blocks=5`. It transformed the branch and memory
+cases and skipped three larger functions. Their combined five-symbol footprint
+was 526 bytes, compared with 1,569 at cap 16. The observed overhead was 4.3%
+at O2 and 5.3% at O3. The two retained cases were precisely the ones where full
+reoptimization recovered direct control flow. A block cap sets eligibility;
+its effect on time depends on which functions dominate the workload.
+
+After the compatibility fixes and pass-scan optimization, rebuilding both
+block limits at O2/O3 reproduced the four measured executables byte for byte.
+The emitted cap-16 IR also matched at both levels. The rebuilt Release plugin
+SHA-256 was `cb5554640e2f0373ff237ae73307c8bb555bad22685ac571f5a1df568c9d1ccb`.

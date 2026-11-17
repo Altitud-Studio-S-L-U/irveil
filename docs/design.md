@@ -116,7 +116,10 @@ changes and conservatively invalidate all module analyses.
   Existing arithmetic flags retain their meaning because operands are unchanged.
   This identity is deliberately simple and may disappear during constant folding.
 - String encoding only mutates private, constant, non-TLS C byte arrays in address
-  space zero without sections or external initialization. A complete use-graph
+  space zero without sections or external initialization. Nonempty module assembly
+  or an inline assembly call with a nonempty template disables string encoding
+  for that module. Assembly can read a symbol by name without an LLVM IR use
+  connecting the reader to its initializer. A complete use-graph
   walk accepts GEPs and ordinary `i8` loads in selected, previously unprocessed
   functions. All other users reject the entire global, including aliases, pointer
   escape, mutable storage, calls, PHIs, unselected readers and wide/volatile/atomic
@@ -199,9 +202,13 @@ two non-entry blocks and a branching entry, without duplicate branch successors.
 Input switches require explicit prior lowering. EH/personality, GC, blockaddress,
 presplit coroutines, varargs/non-C conventions, naked/returns_twice functions,
 dynamic/non-entry/inalloca allocas, preallocated/inalloca parameters,
-indirect/inline-asm/non-C/convergent/noduplicate/returns_twice
-calls, musttail and stack/frame/register/localescape/experimental/coroutine/GC/EH/varargs intrinsics are
-excluded. Spill types are scalar integers 1..64 or address-space-zero pointers;
+indirect/inline-asm/non-C/convergent/noduplicate/returns_twice calls, operand
+bundles and musttail are excluded. Admitted intrinsics are debug information,
+ordinary memory transfers/sets, integer min/max, arithmetic with overflow or
+saturation, and lifetime markers directly referencing an entry alloca. Other
+intrinsics can require an operand to resolve statically to a specific alloca
+or function. A pointer reloaded from a spill slot would violate that contract.
+Spill types are scalar integers 1..64 or address-space-zero pointers;
 the alloca address space must be zero. Unsupported required spills reject the
 entire function. No new loop or branch-weight metadata is inferred for the new
 topology; original instruction debug locations are retained where possible.

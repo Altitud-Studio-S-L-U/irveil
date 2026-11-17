@@ -64,3 +64,88 @@ Expose counters for selected/changed functions and rewritten additions through t
 ## Delivery sequence
 
 Establish this contract; implement the core and compiler adapter; add independent black-box fixtures; validate the public integration and bounds; independently review the diff; publish the repository with maintainer-controlled branches and PR-only main. Future transformations need their own semantic argument, supported-input contract, regression corpus and final-binary measurements before becoming defaults.
+
+## Experimental modular framework
+
+The preceding v0.2 arithmetic contract remains the default. The experimental
+`general` profile adds subtraction, bitwise identities, inverse integer comparisons
+and conditional branch inversion; its defaults do not enable the new structural
+or data families. Explicit `Config::transforms`/`transforms=` overrides the profile,
+including a zero mask/`none` that disables all work. Unknown library enum values,
+mask bits and every expansion limit are validated before inspecting the module.
+The C++ configuration keeps its original first three aggregate members. Consumers
+must rebuild against the matching static library/header; no stable binary ABI is
+promised. LLVM 18, Linux x86-64, annotation selection and non-transitive behavior
+remain the compatibility boundary.
+
+`Config.cpp` owns parsing and validation shared by the plugin adapters. `Pass.cpp`
+coordinates annotation selection, reproducible per-function state, candidate
+snapshots, counters and the processed marker. Instruction, control-flow and data
+emitters remain internal translation units of the same core library. There is no
+runtime dependency or new build dependency. The installed CMake helper validates
+the same option vocabulary at configure time and forwards target-private flags.
+
+Order: snapshot original instruction candidates; encode original literal operands;
+rewrite snapshotted instructions; snapshot and rewrite structural edges/switches;
+finally encode eligible global strings and their loads. Emitted operations do not
+reenter an earlier family. A changed function receives the existing processed
+attribute; subsequent runs skip it regardless of configuration. Unchanged functions
+remain eligible for a later run. Changed-function counters include string-only
+changes and conservatively invalidate all module analyses.
+
+### Semantic arguments and exclusions
+
+- Subtraction uses modular two's complement; AND/OR use De Morgan and XOR uses
+  `(a|b)&~(a&b)`. Duplicated operands are frozen. Comparisons invert the predicate
+  and result without duplicating operands. Branch inversion swaps successors and
+  their profile weights. Scalar widths remain 2..64; no pointer or float compares.
+- A routed edge adds a single unconditional jump to the original target. Its PHIs
+  replace the original predecessor with the route block. Loop edges are natural
+  backedges where the successor dominates a reachable source; loop metadata moves
+  to the new backedge terminator. Iteration order, exits and memory accesses remain
+  unchanged. CFG and loop edges share a cap and can exhaust it in IR order.
+- Switch lowering freezes its condition once before duplicating it in equality
+  tests. It preserves default/case edges and PHI multiplicity for shared targets.
+  For defined input it chooses the same destination; it does not repair input UB.
+  New branches omit switch-specific profile metadata. EH/personality, address-taken
+  blocks, indirect terminators, presplit coroutines and calls marked convergent,
+  noduplicate or returns_twice exclude structural work in that function.
+- Literal encoding computes `(constant XOR key) XOR key` at the exact integer
+  width. Only original binary, `icmp` and return operands qualify. PHIs, switches,
+  GEP indices, calls, intrinsics, vectors, i1 and integers wider than 64 are skipped.
+  Existing arithmetic flags retain their meaning because operands are unchanged.
+  This identity is deliberately simple and may disappear during constant folding.
+- String encoding only mutates private, constant, non-TLS C byte arrays in address
+  space zero without sections or external initialization. A complete use-graph
+  walk accepts GEPs and ordinary `i8` loads in selected, previously unprocessed
+  functions. All other users reject the entire global, including aliases, pointer
+  escape, mutable storage, calls, PHIs, unselected readers and wide/volatile/atomic
+  reads. A nonzero public byte key encodes every byte, including the terminator;
+  each accepted load decodes via XOR. No ctor, alloca, writable cache, extra memory
+  access or thread synchronization is introduced. The address and lifetime remain
+  the same. Original load range metadata is removed because it describes decoded
+  bytes. The global receives an encoding marker; all affected functions receive
+  the processed marker. This is reversible representation, not encryption.
+
+### Bounds and validation
+
+The README lists valid ranges and defaults. Instruction rewrites and switch count
+each use the legacy per-function `max-adds` cap. Edge routing adds at most one block
+and jump per budgeted edge. A switch with N cases adds N test blocks, N comparisons,
+N conditional branches, one final branch and one freeze, replacing the original
+switch; sum of N is capped per function. Zero-case switches still consume the
+switch-count budget. Literal work adds one instruction per capped operand. String
+bytes have a module-wide cap; each original accepted byte load adds one XOR. The
+pointer-use walk and its auxiliary storage scale with the inspected use graph;
+load expansion is proportional to original loads, not solely to string byte count.
+Dominator analysis, PHI/use-list repair and the rest of LLVM have their own costs;
+the arithmetic-only complexity bound above does not describe all new families.
+
+Validation includes exhaustive sub/AND/OR/XOR and all ten integer predicates at
+widths 2..8, structural verifier checks, PHI/backedge/switch regressions, byte/string
+exclusions and limits, plus a separate native corpus with boundary/random integers,
+nested loops, continue/break, switches and selected/unselected strings. Both
+unoptimized and optimized compilation of transformed IR are compared to ordinary
+executables. Debug/Release builds and relocated installed C/C++ consumers remain
+required. Ghidra evaluation uses a separate corpus/protocol and records eliminated
+transforms as counterevidence, without replacing the historical v0.2 results.

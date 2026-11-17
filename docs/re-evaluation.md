@@ -276,3 +276,71 @@ recovered by GAMBA; prefix carry was recovered by the small semantic recognizer
 despite GAMBA timeouts. Each added cost. This evidence supports rejecting these
 specific candidates; it does not prove that all arithmetic obfuscation is equally
 recoverable or replace an evaluation of a larger real application.
+
+## Experimental framework evaluation
+
+On 2026-11-17, source `d1a3d17` was evaluated separately from the historical
+arithmetic experiments. LLVM/Clang 18.1.3 on Linux x86-64 under WSL2 built the
+owned `framework-corpus.cpp` normally, with the existing `general` profile, and
+with all ten explicit transform families at seed 42. Both O2 and O3 were tested.
+Ghidra 12.2 / Temurin 25.0.5+8 used fresh projects, the same 1 GiB heap/two-CPU
+limits and exporter checks as the historical evaluator. Each build's own companion
+provided function locations; no source prototypes were supplied. This does not
+measure function discovery. Raw evidence remains local under `work/`.
+
+All six symbol-bearing executables and their stripped copies agreed on 633
+deterministic boundary/random rows of eight results. Output SHA-256 was
+`52b7784ef28505b0f53a3b69beae840a42c7606d87d57313934ea477ce424807`.
+Eight Ghidra jobs exported 64 records, including repeated normal analyses at each
+optimization level. Both repeats had identical normalized C and selected metrics;
+there were no decompilation timeouts, cancellation or exporter errors. A preliminary
+harness run was incomplete because its repeat-control helper still expected the
+old corpus's names; the final run parameterizes and checks that set explicitly.
+
+The all-family IR counters were:
+
+| Optimization | Adds / sub / bitwise / cmp / branches | CFG / loop edges | Switches | Literal operands | Strings / bytes |
+| --- | --- | --- | --- | --- | --- |
+| O2 | 10 / 2 / 10 / 11 / 7 | 21 / 2 | 1 | 22 | 1 / 9 |
+| O3 | 17 / 2 / 12 / 18 / 15 | 36 / 4 | 1 | 35 | 1 / 9 |
+
+These are module totals, with separate per-function budgets. LLVM's earlier
+optimizations change the operations available at the optimizer-last extension.
+Counters establish that a family ran, not that it survived machine-code emission.
+
+Native instruction counts, including returns but excluding inter-symbol padding:
+
+| Function | O2: normal / general / all families | O3: normal / general / all families |
+| --- | --- | --- |
+| Branches (`re_cfg32`) | 13 / 25 / 25 | 13 / 25 / 25 |
+| Nested loops (`re_loop32`) | 39 / 61 / 61 | 91 / 135 / 135 |
+| Switch (`re_switch32`) | 22 / 32 / 31 | 22 / 32 / 31 |
+| Constant arithmetic (`re_constant64`) | 2 / 4 / 4 | 2 / 4 / 4 |
+| Private string (`re_string8`) | 7 / 7 / 8 | 7 / 7 / 8 |
+| Escaping string control | 1 / 1 / 1 | 1 / 1 / 1 |
+| Unselected arithmetic control | 2 / 2 / 2 | 2 / 2 / 2 |
+| Integer logic (`re_bool32`) | 15 / 39 / 39 | 15 / 39 / 39 |
+
+All stripped files were 14,296 bytes; alignment/file layout masks local growth.
+No runtime overhead measurement or resistance score is inferred from this table.
+
+Ghidra reconstructed ordinary conditions and a readable case ladder. The extra
+CFG/backedge routes did not produce additional decompiled blocks compared with
+the general profile, and literal splits did not introduce extra native instructions
+in these functions. The string retained one extra native instruction and decompiled
+as a byte-table load XORed with `0x23`: the key is visible, and recovery is direct.
+The escaping string and unselected function remained unchanged controls. These
+observations support keeping structural/data families opt-in; this run provides
+no demonstrated increase in analyst effort.
+
+At O2, Ghidra inferred a `void` return for the nested loop in all three variants,
+omitting its actual returned arithmetic despite agreeing native executions. At O3
+it inferred a non-void return and emitted a global-overlap warning. Loop pseudocode
+and P-code/block counts are therefore excluded from claims about recovery or
+difficulty. Stable repeated output does not establish correct decompiler typing.
+
+Candidate plugin SHA-256:
+`7e87cc9bc3d68d95d805d3b2ca46a7e8d470cee96f298e3ddb7fd9931e1c3386`.
+Fixture SHA-256:
+`4fbb306d7692511044e60c541d440b81b35a0366e49cf891a560766511450e18`.
+Reproduce with the [framework protocol](re-validation.md#experimental-framework-protocol).

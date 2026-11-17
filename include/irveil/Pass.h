@@ -21,7 +21,8 @@ constexpr std::uint32_t AllTransforms = (1u << 10) - 1;
 
 struct Config {
   std::uint64_t seed = 0;
-  // In General profile this bounds all eligible rewrites per function.
+  // Legacy name: bounds original instruction rewrites per function, and
+  // independently the number of lowered switches, with any explicit mask.
   std::uint32_t maxAddsPerFunction = 256;
   Profile profile = Profile::Arithmetic;
   // An explicit mask replaces the profile's defaults; zero disables all work.

@@ -119,12 +119,57 @@ compiler-architecture experiments: trivial inverse-comparison and De Morgan
 identities may be optimized away or recovered instantly by a decompiler.
 They are **not** a demonstrated increase in reverse-engineering resistance.
 Inspect the final binary and independently compare its behavior before claiming
-any protection. The profile does not yet implement control-flow flattening,
-constant/string encoding, memory transformations, or whole-program protection.
+any protection. The profile defaults remain unchanged; additional families require
+an explicit `transforms` list, which replaces the profile selection:
+
+```sh
+opt-18 -load-pass-plugin ./build/IRVeilPass.so \
+  '-passes=irveil<transforms=cfg+loops+switch+constants+strings;seed=42;max-edges=16;max-switch-cases=32;max-constants=16;max-string-bytes=1024>' \
+  -verify-each -S input.ll -o output.ll
+```
+
+| Family | Supported transformation and trade-off |
+| --- | --- |
+| `adds`, `sub`, `bitwise`, `cmp`, `branches` | Existing bounded instruction identities, scalar integer widths 2..64; conditional branch inversion also swaps profile weights |
+| `cfg` | Route ordinary non-backedge branch edges through new blocks; one extra jump per edge in IR, often removed by the backend |
+| `loops` | Route natural backedges identified by dominators; PHIs and loop metadata follow the new predecessor; no loop unrolling or state dispatcher |
+| `switch` | Freeze the condition once, then emit an equality ladder with repaired PHIs, including repeated destinations; linear comparisons can cost more than a jump table |
+| `constants` | Split original integer literals into two XOR operands in arithmetic, integer comparisons and returns; one extra IR instruction per operand, readily constant-folded |
+| `strings` | XOR private constant C byte arrays and decode each ordinary scalar `i8` load; requires all uses to end in selected functions, with no escaping pointers, calls, aliases, wide/atomic/volatile loads or mutable storage |
+
+Use `transforms=none` to disable work. Unknown/repeated families and malformed or
+out-of-range options are rejected before mutation. `max-adds` (1..4096, default
+256) bounds original instruction rewrites and, independently, the number of
+lowered switches. CFG and loop edges share `max-edges` (1..256, default 32).
+Switch cases share `max-switch-cases` per function (1..256, default 64); an entire
+switch is skipped if it does not fit. Literal operands share `max-constants`
+(1..4096, default 32). String bytes, including terminators, share
+`max-string-bytes` per module (1..65536, default 4096).
+
+Clang accepts matching `-mllvm -irveil-transforms=...`, `-irveil-max-edges`,
+`-irveil-max-switch-cases`, `-irveil-max-constants` and `-irveil-max-string-bytes`
+options with the same early DSO load shown above. The installed CMake helper
+accepts `PROFILE`, `TRANSFORMS`, `MAX_EDGES`, `MAX_SWITCH_CASES`, `MAX_CONSTANTS`
+and `MAX_STRING_BYTES` alongside the existing options. For example:
+
+```cmake
+irveil_protect_target(app TRANSFORMS cfg+loops+switch+constants+strings
+  MAX_EDGES 16 MAX_SWITCH_CASES 32 MAX_CONSTANTS 16 MAX_STRING_BYTES 1024 REPORT)
+```
+
+Structural rewrites skip functions with EH/personality, address-taken blocks,
+indirect control flow, presplit coroutines or restricted calls. This is local CFG
+diversification, not control-flow flattening or whole-program protection. String
+decoding preserves static lifetime without writable shared initialization, but
+keys and decoded bytes remain observable. Calls such as `puts`/`strlen` cause a
+string to be skipped. Counters report actual IR work, not final-binary survival.
+See the [experimental contract](docs/design.md#experimental-modular-framework)
+and [framework evaluation](docs/re-evaluation.md#experimental-framework-evaluation).
 
 ## Transformation contract
 
-For a scalar integer of width `w`, both identities preserve addition modulo `2^w`:
+For the default arithmetic profile, both identities preserve scalar integer
+addition modulo `2^w`:
 
 ```text
 a + b = (a XOR b) + ((a AND b) << 1)

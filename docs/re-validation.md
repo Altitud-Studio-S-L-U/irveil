@@ -335,3 +335,32 @@ fixture or candidate plugin changes during that run. GAMBA checks its wrapper,
 shared evaluator and input-report fingerprints as well. Primary and exploratory
 reports generated during tool development are kept separately from these final
 comparisons.
+
+## Experimental framework protocol
+
+The framework uses a separate owned corpus and does not replace the frozen
+arithmetic/SiMBA/GAMBA studies. Compile normal, existing `general` and explicit
+all-family variants at O2/O3 with seed 42, identical stripping and companion-entry
+mapping. Require every native output to agree on 633 rows before accepting any
+Ghidra evidence. Run each normal analysis twice and require identical metrics and
+normalized C. Ghidra 12.2/JDK 25, max heap 1 GiB, two CPUs with OS affinity, analysis
+timeout 120 seconds and per-function decompilation timeout 30 seconds are fixed.
+Keep failures as incomplete evidence, never as improved resistance.
+
+```sh
+python3 tools/re/framework.py --plugin build/IRVeilPass.so \
+  --llvm-bin /usr/lib/llvm-18/bin \
+  --ghidra-home /absolute/path/to/ghidra_12.2_PUBLIC \
+  --java-home /absolute/path/to/jdk-25 \
+  --output /absolute/path/to/irveil/work/new-framework-evidence
+```
+
+Use a fresh output directory. The runner records plugin/source/exporter hashes,
+commands, IR counters, native behavior hashes, stripped binaries, disassembly,
+decompiled C and P-code. Generated files stay out of Git. Inspect control-flow
+recovery, visible string decoding, eliminated literal splits and decompiler type
+errors alongside instruction/block counts. The shared string and unselected
+arithmetic function are negative controls. General-versus-all is a combined-family
+comparison, not attribution of a delta to each individual family. Known entries
+and a synthetic corpus do not quantify discovery, human effort or whole-program
+resistance; timings and byte counts do not establish protection.

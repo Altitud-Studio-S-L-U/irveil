@@ -278,6 +278,73 @@ no:
                                   f"-passes=irveil<{option}>", "-disable-output", "-"], input_text=source)
                 self.assertNotEqual(result.returncode, 0)
 
+    def test_cfg_loop_backedges_switch_phi_multiplicity_and_limits(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i32 %n, i32 %choice) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %latch ]
+  %next = add i32 %i, 1
+  %more = icmp ult i32 %i, %n
+  br i1 %more, label %latch, label %dispatch
+latch:
+  br label %loop
+dispatch:
+  switch i32 %choice, label %shared [ i32 0, label %zero
+                                   i32 1, label %shared
+                                   i32 2, label %shared ]
+zero:
+  ret i32 %i
+shared:
+  %v = phi i32 [ 17, %dispatch ], [ 17, %dispatch ], [ 17, %dispatch ]
+  ret i32 %v
+}
+define i32 @main() {
+  %a = call i32 @f(i32 4, i32 0)
+  %b = call i32 @f(i32 0, i32 1)
+  %c = call i32 @f(i32 2, i32 2)
+  %d = call i32 @f(i32 3, i32 -1)
+  %ab = add i32 %a, %b
+  %cd = add i32 %c, %d
+  %all = add i32 %ab, %cd
+  %bad = icmp ne i32 %all, 55
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        for families in ["cfg", "loops", "switch", "cfg+loops+switch"]:
+            with self.subTest(families=families):
+                pipeline = f"irveil<transforms={families}>"
+                output = self.transform(source, pipeline)
+                body = function_body(output, "f")
+                self.assertEqual("irveil.loop.edge" in body, "loops" in families)
+                self.assertEqual("irveil.cfg.edge" in body, "cfg" in families)
+                self.assertEqual("switch i32" in body, "switch" not in families)
+                # Reparse both sides: LLVM may reorder diagnostic predecessor comments.
+                self.assertEqual(canonical_ir(self.transform(output, "verify")),
+                                 canonical_ir(self.transform(output, pipeline)))
+                path = self.work / (families.replace("+", "-") + ".ll")
+                path.write_text(output)
+                self.checked([self.llvm / "lli", path])
+        capped = function_body(self.transform(source, "irveil<transforms=cfg+loops;max-edges=1>"), "f")
+        self.assertEqual(len(re.findall(r"^irveil\.(?:cfg|loop)\.edge\d*:", capped, re.MULTILINE)), 1)
+        skipped = self.transform(source, "irveil<transforms=switch;max-switch-cases=2>")
+        self.assertIn("switch i32", function_body(skipped, "f"))
+
+    def test_cfg_skips_eh_and_address_taken_functions(self):
+        source = annotations(["f"]) + '''
+@address = global ptr blockaddress(@f, %exit)
+define i32 @f() {
+entry:
+  br label %exit
+exit:
+  ret i32 0
+}
+'''
+        self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+            self.transform(source, "irveil<transforms=cfg+loops+switch>")))
+
     def test_per_function_cap_and_bounded_expansion(self):
         source = self.fixture("selection.ll")
         original = function_body(self.transform(source, "verify"), "protected")

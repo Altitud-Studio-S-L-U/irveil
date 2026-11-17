@@ -1,6 +1,7 @@
 #include "irveil/Pass.h"
 #include "InstructionTransform.h"
 #include "Config.h"
+#include "ControlFlowTransform.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -114,9 +115,6 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     // Snapshot only original candidates; generated adds cannot enter this run.
     auto candidates = collectCandidates(*function, config.maxAddsPerFunction,
                                         effectiveTransforms(config));
-    if (candidates.empty())
-      continue;
-
     std::uint64_t state = functionSeed(function->getName(), config.seed);
     for (const Candidate &candidate : candidates) {
       const auto selector = nextRandom(state);
@@ -131,8 +129,11 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
       rewriteInstruction(*candidate.instruction, candidate.kind, selector);
     }
 
-    function->addFnAttr(ProcessedAttribute);
-    ++statistics.changedFunctions;
+    const bool controlChanged = rewriteControlFlow(*function, config, statistics);
+    if (!candidates.empty() || controlChanged) {
+      function->addFnAttr(ProcessedAttribute);
+      ++statistics.changedFunctions;
+    }
   }
   return statistics;
 }

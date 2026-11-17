@@ -177,8 +177,8 @@ class IRVeilTests(unittest.TestCase):
     def test_opt_in_general_profile_semantics_and_structure(self):
         # General is opt-in. Cover arithmetic, boolean logic, comparisons and
         # conditional branches, including a PHI that depends on predecessor edges.
-        source = ('source_filename = "general.ll"\\n'
-                  'target triple = "x86_64-pc-linux-gnu"\\n'
+        source = ('source_filename = "general.ll"\n'
+                  'target triple = "x86_64-pc-linux-gnu"\n'
                   + annotations(["general"]) + """
 define i32 @general(i32 %a, i32 %b) {
 entry:

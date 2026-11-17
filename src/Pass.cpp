@@ -91,6 +91,8 @@ struct Candidate {
 llvm::SmallVector<Candidate, 16> collectCandidates(llvm::Function &function,
                                                     std::uint32_t cap, std::uint32_t transforms) {
   llvm::SmallVector<Candidate, 16> candidates;
+  if (!(transforms & (Adds | Subtracts | Bitwise | Comparisons | Branches)))
+    return candidates;
   for (llvm::BasicBlock &block : function) {
     for (llvm::Instruction &instruction : block) {
       const auto kind = classifyInstruction(instruction, transforms);
@@ -110,6 +112,8 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
   Statistics statistics;
   auto functions = selectFunctions(module);
   statistics.selectedFunctions = functions.size();
+  const auto transforms = effectiveTransforms(config);
+  if (!transforms) return statistics;
   llvm::SmallVector<llvm::Function *, 16> eligible;
   for (llvm::Function *function : functions) {
     if (function->hasFnAttribute(ProcessedAttribute))
@@ -118,8 +122,9 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
 
     // Snapshot only original candidates; generated adds cannot enter this run.
     auto candidates = collectCandidates(*function, config.maxAddsPerFunction,
-                                        effectiveTransforms(config));
-    std::uint64_t state = functionSeed(function->getName(), config.seed);
+                                        transforms);
+    const auto seed = functionSeed(function->getName(), config.seed);
+    std::uint64_t state = seed;
     // Encode original operands before arithmetic emission, never generated ones.
     const bool constantsChanged = encodeConstants(*function, config, state, statistics);
     for (const Candidate &candidate : candidates) {
@@ -136,8 +141,7 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     }
 
     const bool controlChanged = rewriteControlFlow(*function, config, statistics);
-    const bool flattened = flattenControlFlow(*function, config,
-        functionSeed(function->getName(), config.seed), statistics);
+    const bool flattened = flattenControlFlow(*function, config, seed, statistics);
     if (!candidates.empty() || controlChanged || constantsChanged || flattened) {
       function->addFnAttr(ProcessedAttribute);
     }

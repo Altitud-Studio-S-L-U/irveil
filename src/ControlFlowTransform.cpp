@@ -7,6 +7,8 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/NoFolder.h"
 
+#include <optional>
+
 namespace irveil {
 namespace {
 bool supported(const llvm::Function &function) {
@@ -67,14 +69,16 @@ bool rewriteControlFlow(llvm::Function &function, const Config &config,
   llvm::SmallVector<Edge, 16> edges;
   llvm::SmallVector<llvm::SwitchInst *, 8> switches;
   // Build analysis from the current CFG and snapshot original terminators only.
-  llvm::DominatorTree dominators(function);
+  std::optional<llvm::DominatorTree> dominators;
+  if (mask & (CFG | Loops)) dominators.emplace(function);
   std::uint32_t cases = 0;
   for (auto &block : function) {
     if (auto *branch = llvm::dyn_cast<llvm::BranchInst>(block.getTerminator())) {
+      if (!dominators || edges.size() == config.maxEdgesPerFunction) continue;
       if (branch->isConditional() && branch->getSuccessor(0) == branch->getSuccessor(1)) continue;
       for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
         auto *target = branch->getSuccessor(i);
-        const bool backedge = dominators.isReachableFromEntry(&block) && dominators.dominates(target, &block);
+        const bool backedge = dominators->isReachableFromEntry(&block) && dominators->dominates(target, &block);
         if ((mask & (backedge ? Loops : CFG)) && edges.size() < config.maxEdgesPerFunction)
           edges.push_back({branch, i, backedge});
       }

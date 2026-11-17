@@ -4,6 +4,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
@@ -16,16 +17,16 @@ bool encodeConstants(llvm::Function &function, const Config &config,
   llvm::SmallVector<Operand, 16> operands;
   // Snapshot before emission. PHIs, switches, GEP indices, intrinsics and calls
   // may require literals or edge-specific placement and are deliberately skipped.
-  for (auto &block : function) {
-    for (auto &instruction : block) {
-      if (!llvm::isa<llvm::BinaryOperator, llvm::ICmpInst, llvm::ReturnInst>(&instruction)) continue;
-      for (unsigned i = 0; i < instruction.getNumOperands(); ++i) {
-        auto *value = llvm::dyn_cast<llvm::ConstantInt>(instruction.getOperand(i));
-        if (value && value->getBitWidth() >= 2 && value->getBitWidth() <= 64 &&
-            operands.size() < config.maxConstantsPerFunction)
-          operands.push_back({&instruction, i, value});
+  for (auto &instruction : llvm::instructions(function)) {
+    if (!llvm::isa<llvm::BinaryOperator, llvm::ICmpInst, llvm::ReturnInst>(&instruction)) continue;
+    for (unsigned i = 0; i < instruction.getNumOperands(); ++i) {
+      auto *value = llvm::dyn_cast<llvm::ConstantInt>(instruction.getOperand(i));
+      if (value && value->getBitWidth() >= 2 && value->getBitWidth() <= 64) {
+        operands.push_back({&instruction, i, value});
+        if (operands.size() == config.maxConstantsPerFunction) break;
       }
     }
+    if (operands.size() == config.maxConstantsPerFunction) break;
   }
   for (auto operand : operands) {
     seed = seed * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);

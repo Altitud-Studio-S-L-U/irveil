@@ -394,6 +394,11 @@ creates a separately described experiment. Do not compare reoptimized IR compile
 cost with ordinary source compilation. Process startup, warm filesystem caches,
 two-CPU affinity and uncontrolled host load remain limitations. Use native symbol
 instruction/byte counts and stripped file sizes alongside these timings.
+Count native instructions over each complete ELF symbol range from its companion,
+including in-symbol padding and excluding padding outside the symbol. Ghidra's
+function body can omit jumptable destinations, so it must not supply native cost
+counts. Flag unrecovered-jump warnings and void returns in this non-void corpus;
+exclude those incomplete C/P-code/block records from difficulty comparisons.
 
 Run eight fresh Ghidra jobs: three variants and a repeated normal control at both
 optimization levels, with the existing exporter and fixed 120s analysis/30s

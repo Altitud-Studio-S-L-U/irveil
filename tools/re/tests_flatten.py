@@ -1,7 +1,7 @@
 """Failure controls for flattening evidence, independent of Ghidra availability."""
 import unittest
 
-from flatten import ir_facts, native_facts
+from flatten import decompiler_limits, ir_facts, native_facts
 
 
 class FlattenEvidenceControls(unittest.TestCase):
@@ -39,13 +39,27 @@ attributes #0 = { "irveil.flattened" }
   401000: movl %edi, %eax
   401002: jmpq *%rax
   401004: jne 0x401000 <re_test>
+  401008: nopl (%rax)
 0000000000401010 <other>:
   401010: jmpq *%rax
 '''
-        facts = native_facts(disassembly, ["re_test"])["re_test"]
-        self.assertEqual(facts, {"indirectJumps": 1, "backwardBranches": 1})
+        spec = {"id": "re_test", "address": "401000", "size": 8}
+        facts = native_facts(disassembly, [spec])["re_test"]
+        self.assertEqual(facts, {"symbolBytes": 8, "symbolInstructions": 3,
+                                 "indirectJumps": 1, "backwardBranches": 1})
         with self.assertRaisesRegex(ValueError, "missing"):
-            native_facts(disassembly, ["re_absent"])
+            native_facts(disassembly, [{**spec, "id": "re_absent"}])
+        with self.assertRaisesRegex(ValueError, "address"):
+            native_facts(disassembly, [{**spec, "address": "402000"}])
+
+    def test_partial_decompilation_is_flagged_separately_from_native_cost(self):
+        text = '''/* WARNING: Could not recover jumptable */
+void FUN_00401000(uint n) { /* Treating indirect jump as call */ }
+'''
+        self.assertEqual(decompiler_limits(text), {
+            "unrecoveredJumpTable": True, "voidReturnInNonVoidCorpus": True})
+        self.assertEqual(decompiler_limits("uint FUN_00401000(uint n) { return n; }"), {
+            "unrecoveredJumpTable": False, "voidReturnInNonVoidCorpus": False})
 
 
 if __name__ == "__main__":

@@ -42,20 +42,37 @@ def ir_facts(text, names=FUNCTIONS):
     return result
 
 
-def native_facts(disassembly, names=FUNCTIONS):
+def native_facts(disassembly, functions):
     result = {}
-    for name in names:
-        match = re.search(r"^[0-9a-f]+ <" + re.escape(name) + r">:\n(.*?)(?=^[0-9a-f]+ <|\Z)",
+    for spec in functions:
+        name = spec["id"]
+        address, size = int(spec["address"], 16), spec["size"]
+        if not 1 <= size <= 65536: raise ValueError("Native symbol size out of bounds")
+        match = re.search(r"^([0-9a-f]+) <" + re.escape(name) + r">:\n(.*?)(?=^[0-9a-f]+ <|\Z)",
                           disassembly, re.MULTILINE | re.DOTALL)
         if not match:
             raise ValueError("Disassembly function missing: " + name)
-        body = match[1]
+        if int(match[1], 16) != address: raise ValueError("Disassembly address differs from companion")
+        lines = [(int(at, 16), opcode + operands) for at, opcode, operands in re.findall(
+            r"^[ \t]*([0-9a-f]+):[ \t]+([a-z][a-z0-9]*)([^\n]*)", match[2], re.MULTILINE)
+                 if address <= int(at, 16) < address + size]
+        if not lines or lines[0][0] != address: raise ValueError("Native symbol instructions missing")
         backward = 0
-        for address, target in re.findall(r"^\s*([0-9a-f]+):\s+j\w*\s+0x([0-9a-f]+)", body, re.MULTILINE):
-            backward += int(target, 16) < int(address, 16)
-        result[name] = {"indirectJumps": len(re.findall(r"\bjmpq?\s+\*", body)),
+        for at, text in lines:
+            target = re.search(r"\bj\w*\s+0x([0-9a-f]+)", text)
+            if target: backward += int(target[1], 16) < at
+        body = "\n".join(text for _, text in lines)
+        # Ghidra may miss indirect-jump targets or exclude alignment bytes. Cost
+        # uses the entire ELF symbol, including in-symbol padding, independently.
+        result[name] = {"symbolBytes": size, "symbolInstructions": len(lines),
+                        "indirectJumps": len(re.findall(r"\bjmpq?\s+\*", body)),
                         "backwardBranches": backward}
     return result
+
+
+def decompiler_limits(text):
+    return {"unrecoveredJumpTable": bool(re.search(r"Could not recover jumptable|Treating indirect jump as call", text)),
+            "voidReturnInNonVoidCorpus": bool(re.search(r"^void \w+\(", text, re.MULTILINE))}
 
 
 def precise_run(commands, argv, label):
@@ -185,7 +202,8 @@ def main(argv=None):
                 if expected is None: expected = behavior
                 elif expected != behavior: raise ValueError("Native behavior mismatch: " + variant)
                 case["ir"] = {"path": str(ir), "sha256": sha256(ir), "functions": ir_facts(ir.read_text())}
-                case["nativeDispatchEvidence"] = native_facts((Path(case["directory"]) / "disassembly.txt").read_text())
+                case["nativeDispatchEvidence"] = native_facts(
+                    (Path(case["directory"]) / "disassembly.txt").read_text(), case["manifest"]["functions"])
                 if plugin:
                     log = (args.output / "logs" / f"{optimization}-{variant}-compile.log").read_text()
                     case["irCounters"] = {key: int(value) for key, value in re.findall(r"([a-z][a-z-]*)=(\d+)", log)}
@@ -198,6 +216,9 @@ def main(argv=None):
                 name = f"{optimization}-{case['variant']}"
                 print("Ghidra " + name, file=sys.stderr, flush=True)
                 case["analysis"] = export_case(args, commands, case, name, Path(case["directory"]) / "ghidra")
+                case["knownDecompilerLimits"] = {function: decompiler_limits(
+                    (Path(case["directory"]) / "ghidra/decompiled" / (function + ".c")).read_text())
+                    for function in FUNCTIONS}
             print("Ghidra repeated control " + optimization, file=sys.stderr, flush=True)
             repeated = export_case(args, commands, built[0], optimization + "-repeat", args.output / (optimization + "-repeat"))
             result["controls"].append({"optimization": optimization,
@@ -212,7 +233,7 @@ def main(argv=None):
         "semantics": "633 boundary/random rows, eight function results and four memory cells; all symbol-bearing/stripped outputs agree before evidence is accepted. Benchmark checksums also agree.",
         "pipelines": "Normal and flatten are direct Clang O2/O3 builds. IR observations use separate same-option compilations. Reoptimized is opt default<O2/O3> applied to flattened IR, then Clang with IR passes disabled and the same backend optimization level.",
         "cost": "Fixed owned integer/volatile-cell workload; alternating normal/flatten compile pairs and alternating forward/reverse three-variant runtime orders; one warmup pair/order omitted, all raw measured samples retained. High-resolution process wall time includes startup, warm filesystem caches and uncontrolled host load; CPU affinity limited to two processors. Reoptimized compile cost is not compared to source compilation.",
-        "survival": "An attribute is only a work marker. Record actual IR PHI-fed switches, native indirect/backward jumps and decompiled C/P-code; inspect whether a state dispatcher remains. Neither a jump count nor visible switch is a resistance score.",
+        "survival": "An attribute is only a work marker. Record actual IR PHI-fed switches, native indirect/backward jumps and decompiled C/P-code; inspect whether a state dispatcher remains. Native cost counts the full companion ELF symbol, including in-symbol padding, independently of Ghidra's possibly partial function body. Explicitly flag unrecovered jump tables and void returns in this non-void corpus; exclude known-invalid C/P-code/block comparisons from difficulty claims. Neither a jump count nor visible switch is a resistance score.",
         "ghidra": "Ghidra 12.2/JDK 25, fresh projects, default analysis, heap 1 GiB, two CPUs with OS affinity, fixed 120s analysis/30s per-function limits. Each own companion grants known entries; no source prototypes. Repeat normal metrics/C must match. Incomplete/unsupported/error outcomes are not improvements.",
     }
     write_json(args.output / "evaluation.json", result)

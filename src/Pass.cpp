@@ -1,14 +1,17 @@
 #include "irveil/Pass.h"
+#include "InstructionTransform.h"
+#include "Config.h"
+#include "ControlFlowTransform.h"
+#include "DataTransform.h"
+#include "FlattenTransform.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/NoFolder.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -20,7 +23,6 @@ namespace {
 
 constexpr llvm::StringLiteral ProcessedAttribute = "irveil.processed";
 
-enum class AddIdentity { XorCarry, DoubleOrMinusXor };
 
 llvm::SmallVector<llvm::Function *, 16>
 selectFunctions(llvm::Module &module) {
@@ -81,95 +83,72 @@ std::uint64_t nextRandom(std::uint64_t &state) {
   return value ^ (value >> 31);
 }
 
-llvm::SmallVector<llvm::BinaryOperator *, 16>
-collectAdds(llvm::Function &function, std::uint32_t cap) {
-  llvm::SmallVector<llvm::BinaryOperator *, 16> additions;
+struct Candidate {
+  llvm::Instruction *instruction;
+  OperationKind kind;
+};
+
+llvm::SmallVector<Candidate, 16> collectCandidates(llvm::Function &function,
+                                                    std::uint32_t cap, std::uint32_t transforms) {
+  llvm::SmallVector<Candidate, 16> candidates;
+  if (!(transforms & (Adds | Subtracts | Bitwise | Comparisons | Branches)))
+    return candidates;
   for (llvm::BasicBlock &block : function) {
     for (llvm::Instruction &instruction : block) {
-      auto *add = llvm::dyn_cast<llvm::BinaryOperator>(&instruction);
-      if (!add || add->getOpcode() != llvm::Instruction::Add)
-        continue;
-      const auto *type = llvm::dyn_cast<llvm::IntegerType>(add->getType());
-      if (!type || type->getBitWidth() < 2 || type->getBitWidth() > 64)
-        continue;
-
-      additions.push_back(add);
-      if (additions.size() == cap)
-        return additions;
+      const auto kind = classifyInstruction(instruction, transforms);
+      if (kind == OperationKind::Unsupported) continue;
+      candidates.push_back({&instruction, kind});
+      if (candidates.size() == cap) return candidates;
     }
   }
-  return additions;
-}
-
-llvm::Value *emitXorCarry(llvm::IRBuilder<llvm::NoFolder> &builder,
-                          llvm::Value *left, llvm::Value *right) {
-  llvm::Value *common = builder.CreateAnd(left, right, "irveil.and");
-  llvm::Value *bits = builder.CreateXor(left, right, "irveil.xor");
-  llvm::Value *carry = builder.CreateShl(
-      common, llvm::ConstantInt::get(left->getType(), 1), "irveil.carry");
-  return builder.CreateAdd(bits, carry, "irveil.sum");
-}
-
-llvm::Value *emitDoubleOrMinusXor(llvm::IRBuilder<llvm::NoFolder> &builder,
-                                  llvm::Value *left, llvm::Value *right) {
-  llvm::Value *bits = builder.CreateOr(left, right, "irveil.or");
-  llvm::Value *doubled = builder.CreateShl(
-      bits, llvm::ConstantInt::get(left->getType(), 1), "irveil.doubled");
-  llvm::Value *different = builder.CreateXor(left, right, "irveil.xor");
-  return builder.CreateSub(doubled, different, "irveil.sum");
-}
-
-void rewriteAdd(llvm::BinaryOperator &add, AddIdentity identity) {
-  // NoFolder keeps constant operands from collapsing the intended IR structure.
-  // Fresh instructions deliberately inherit no nsw, nuw, exact or other flags.
-  llvm::IRBuilder<llvm::NoFolder> builder(&add);
-  builder.SetCurrentDebugLocation(add.getDebugLoc());
-
-  // The identities duplicate their operands. Freeze once per original operand
-  // so every generated use observes the same choice for an undef/poison value.
-  llvm::Value *left = builder.CreateFreeze(add.getOperand(0), "irveil.left");
-  llvm::Value *right = builder.CreateFreeze(add.getOperand(1), "irveil.right");
-  llvm::Value *replacement = identity == AddIdentity::XorCarry
-                                 ? emitXorCarry(builder, left, right)
-                                 : emitDoubleOrMinusXor(builder, left, right);
-
-  replacement->takeName(&add);
-  add.replaceAllUsesWith(replacement);
-  add.eraseFromParent();
+  return candidates;
 }
 
 } // namespace
 
 llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config) {
-  if (config.maxAddsPerFunction < 1 || config.maxAddsPerFunction > 4096)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "IRVeil maxAddsPerFunction must be between 1 and 4096");
+  if (auto error = validateConfig(config)) return std::move(error);
 
   Statistics statistics;
   auto functions = selectFunctions(module);
   statistics.selectedFunctions = functions.size();
+  const auto transforms = effectiveTransforms(config);
+  if (!transforms) return statistics;
+  llvm::SmallVector<llvm::Function *, 16> eligible;
   for (llvm::Function *function : functions) {
     if (function->hasFnAttribute(ProcessedAttribute))
       continue;
+    eligible.push_back(function);
 
     // Snapshot only original candidates; generated adds cannot enter this run.
-    auto additions = collectAdds(*function, config.maxAddsPerFunction);
-    if (additions.empty())
-      continue;
-
-    std::uint64_t state = functionSeed(function->getName(), config.seed);
-    for (llvm::BinaryOperator *add : additions) {
-      const auto identity = (nextRandom(state) & 1) != 0
-                                ? AddIdentity::XorCarry
-                                : AddIdentity::DoubleOrMinusXor;
-      rewriteAdd(*add, identity);
+    auto candidates = collectCandidates(*function, config.maxAddsPerFunction,
+                                        transforms);
+    const auto seed = functionSeed(function->getName(), config.seed);
+    std::uint64_t state = seed;
+    // Encode original operands before arithmetic emission, never generated ones.
+    const bool constantsChanged = encodeConstants(*function, config, state, statistics);
+    for (const Candidate &candidate : candidates) {
+      const auto selector = nextRandom(state);
+      switch (candidate.kind) {
+      case OperationKind::Add: ++statistics.rewrittenAdds; break;
+      case OperationKind::Sub: ++statistics.rewrittenSubtracts; break;
+      case OperationKind::Bitwise: ++statistics.rewrittenBitwise; break;
+      case OperationKind::Comparison: ++statistics.rewrittenComparisons; break;
+      case OperationKind::Branch: ++statistics.rewrittenBranches; break;
+      case OperationKind::Unsupported: llvm_unreachable("Unsupported candidate");
+      }
+      rewriteInstruction(*candidate.instruction, candidate.kind, selector);
     }
 
-    function->addFnAttr(ProcessedAttribute);
-    ++statistics.changedFunctions;
-    statistics.rewrittenAdds += additions.size();
+    const bool controlChanged = rewriteControlFlow(*function, config, statistics);
+    const bool flattened = flattenControlFlow(*function, config, seed, statistics);
+    if (!candidates.empty() || controlChanged || constantsChanged || flattened) {
+      function->addFnAttr(ProcessedAttribute);
+    }
   }
+  encodeStrings(module, eligible, config, statistics);
+  for (auto *function : eligible)
+    if (function->hasFnAttribute(ProcessedAttribute)) ++statistics.changedFunctions;
   return statistics;
 }
 
@@ -184,7 +163,32 @@ llvm::PreservedAnalyses IRVeilPass::run(
                  << " max-adds=" << config_.maxAddsPerFunction
                  << " selected=" << result->selectedFunctions
                  << " changed=" << result->changedFunctions
-                 << " rewritten-adds=" << result->rewrittenAdds << '\n';
+                 << " rewritten-adds=" << result->rewrittenAdds
+                 << " transforms=" << effectiveTransforms(config_)
+                 << " sub=" << result->rewrittenSubtracts
+                 << " bitwise=" << result->rewrittenBitwise
+                 << " cmp=" << result->rewrittenComparisons
+                 << " branches=" << result->rewrittenBranches
+                 << " cfg-edges=" << result->routedCFGEdges
+                 << " loop-edges=" << result->routedLoopEdges
+                 << " switches=" << result->loweredSwitches
+                 << " constants=" << result->encodedConstants
+                 << " strings=" << result->encodedStrings
+                 << " string-bytes=" << result->encodedStringBytes
+                 << " decoded-string-loads=" << result->decodedStringLoads
+                 << " max-edges=" << config_.maxEdgesPerFunction
+                 << " max-switch-cases=" << config_.maxSwitchCasesPerFunction
+                 << " max-constants=" << config_.maxConstantsPerFunction
+                 << " max-string-bytes=" << config_.maxStringBytesPerModule
+                 << " max-string-loads=" << config_.maxStringLoadsPerModule
+                 << " flattened=" << result->flattenedFunctions
+                 << " flatten-blocks=" << result->flattenedBlocks
+                 << " flatten-spills=" << result->flattenSpillSlots
+                 << " flatten-added=" << result->flattenAddedInstructions
+                 << " flatten-skipped-unsupported=" << result->flattenSkippedUnsupported
+                 << " flatten-skipped-budget=" << result->flattenSkippedBudget
+                 << " max-flatten-blocks=" << config_.maxFlattenBlocksPerFunction
+                 << " max-flatten-instructions=" << config_.maxFlattenInstructionsPerFunction << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

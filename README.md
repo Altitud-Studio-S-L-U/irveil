@@ -85,9 +85,148 @@ The plugin can also transform an LLVM IR module through `opt-18`. See the [expli
 
 Use `IRVeil::Core` to call `irveil::applyObfuscation` from another C++ application. See the [standalone library consumer](docs/integration.md#embed-the-library). Consumers require the matching LLVM 18 development package; there is no stable cross-version LLVM ABI.
 
+## Experimental general profile (opt-in)
+
+The default profile remains the released arithmetic-only behavior. The
+experimental `general` profile additionally rewrites selected scalar integer
+`sub`, `and`, `or`, `xor`, integer comparisons (`icmp`), and conditional
+branches with distinct successors. It preserves branch destinations by swapping
+the targets when inverting the condition. The profile is bounded by the same
+per-function instruction count setting (named `max-adds` for compatibility).
+
+Use the general profile explicitly with `opt`:
+
+```sh
+opt-18 -load-pass-plugin ./build/IRVeilPass.so \
+  '-passes=irveil<profile=general;seed=42;max-adds=32>' \
+  -S input.ll -o output.ll
+```
+
+Or when compiling C/C++ via Clang:
+
+```sh
+clang++-18 -O2 -I include \
+  -Xclang -load -Xclang ./build/IRVeilPass.so \
+  -fpass-plugin=./build/IRVeilPass.so \
+  -mllvm -irveil-profile=general \
+  examples/demo.cpp -o build/demo-general
+```
+
+Unsupported instructions and values outside the documented scalar widths are
+left unchanged. Instructions are snapshotted before mutation, and only the
+selected functions are transformed. These rewrites are for semantic and
+compiler-architecture experiments: trivial inverse-comparison and De Morgan
+identities may be optimized away or recovered instantly by a decompiler.
+They are **not** a demonstrated increase in reverse-engineering resistance.
+Inspect the final binary and independently compare its behavior before claiming
+any protection. The profile defaults remain unchanged; additional families require
+an explicit `transforms` list, which replaces the profile selection:
+
+```sh
+opt-18 -load-pass-plugin ./build/IRVeilPass.so \
+  '-passes=irveil<transforms=cfg+loops+switch+constants+strings;seed=42;max-edges=16;max-switch-cases=32;max-constants=16;max-string-bytes=1024>' \
+  -verify-each -S input.ll -o output.ll
+```
+
+| Family | Supported transformation and trade-off |
+| --- | --- |
+| `adds`, `sub`, `bitwise`, `cmp`, `branches` | Existing bounded instruction identities, scalar integer widths 2..64; conditional branch inversion also swaps profile weights |
+| `cfg` | Route ordinary non-backedge branch edges through new blocks; one extra jump per edge in IR, often removed by the backend |
+| `loops` | Route natural backedges identified by dominators; PHIs and loop metadata follow the new predecessor; no loop unrolling or state dispatcher |
+| `switch` | Freeze the condition once, then emit an equality ladder with repaired PHIs, including repeated destinations; linear comparisons can cost more than a jump table |
+| `constants` | Split original integer literals into two XOR operands in arithmetic, integer comparisons and returns; one extra IR instruction per operand, readily constant-folded |
+| `strings` | XOR private constant C byte arrays whose uses end in selected ordinary scalar `i8` loads. Modules with nonempty assembly text are skipped because assembly can reference symbols by name. |
+| `flatten` | Experimental whole-function SSA dispatcher for a restricted branch CFG; spills crossing registers/PHIs to private stack slots, with preflight block/instruction limits; additional memory traffic and dispatch overhead can be substantial |
+
+Use `transforms=none` to disable work. Unknown/repeated families and malformed or
+out-of-range options are rejected before mutation. `max-adds` (1..4096, default
+256) bounds original instruction rewrites and, independently, the number of
+lowered switches. CFG and loop edges share `max-edges` (1..256, default 32).
+Switch cases share `max-switch-cases` per function (1..256, default 64); an entire
+switch is skipped if it does not fit. Literal operands share `max-constants`
+(1..4096, default 32). String bytes, including terminators, share
+`max-string-bytes` per module (1..65536, default 4096). Decoded byte loads share
+`max-string-loads` per module (1..65536, default 4096), independently of byte count.
+A global is skipped without changing its initializer or any reader if all its
+loads do not fit the remaining budget. This bounds string instruction growth even
+when a small array has many readers.
+
+Clang accepts matching `-mllvm -irveil-transforms=...`, `-irveil-max-edges`,
+`-irveil-max-switch-cases`, `-irveil-max-constants`, `-irveil-max-string-bytes`
+and `-irveil-max-string-loads`
+options with the same early DSO load shown above. The installed CMake helper
+accepts `PROFILE`, `TRANSFORMS`, `MAX_EDGES`, `MAX_SWITCH_CASES`, `MAX_CONSTANTS`,
+`MAX_STRING_BYTES` and `MAX_STRING_LOADS` alongside the existing options. For example:
+
+```cmake
+irveil_protect_target(app TRANSFORMS cfg+loops+switch+constants+strings
+  MAX_EDGES 16 MAX_SWITCH_CASES 32 MAX_CONSTANTS 16
+  MAX_STRING_BYTES 1024 MAX_STRING_LOADS 256 REPORT)
+```
+
+Local structural rewrites skip functions with EH/personality, address-taken blocks,
+indirect control flow, presplit coroutines or restricted calls. The `cfg`/`loops`
+families provide local CFG diversification. Flattening has its own subset below. String
+decoding preserves static lifetime without writable shared initialization, but
+keys and decoded bytes remain observable. Calls such as `puts`/`strlen` cause a
+string to be skipped. Counters report actual IR work, not final-binary survival.
+See the [experimental contract](docs/design.md#experimental-modular-framework)
+and [framework evaluation](docs/re-evaluation.md#experimental-framework-evaluation).
+
+### Bounded flattening experiment
+
+Enable only with `transforms=flatten` (or an explicit list containing it). Neither
+profile enables it by default. `max-flatten-blocks` caps dispatched blocks after
+critical-edge splitting (1..64, default 16); `max-flatten-instructions` caps a
+conservative upper bound on net IR instruction growth (1..4096, default 256).
+An unsupported or over-budget function is skipped before flattening mutates it.
+The equivalent Clang flags are `-irveil-max-flatten-blocks` and
+`-irveil-max-flatten-instructions`; CMake accepts `MAX_FLATTEN_BLOCKS` and
+`MAX_FLATTEN_INSTRUCTIONS`.
+
+```sh
+opt-18 -load-pass-plugin ./build/IRVeilPass.so \
+  '-passes=irveil<transforms=flatten;seed=42;max-flatten-blocks=16;max-flatten-instructions=256>' \
+  -verify-each -S input.ll -o output.ll
+```
+
+The initial subset has at least two non-entry blocks, a branching entry, only
+branch/return/unreachable terminators, no unreachable blocks or duplicate branch
+successors, and only scalar integers up to 64 bits or address-space-zero pointers
+requiring spills. Entry definitions keep their dominance; other escaping values
+and PHIs use LLVM 18's register-to-memory utilities. A state PHI and switch route
+the original blocks without reordering their observable operations. No globals,
+runtime calls or volatile accesses are added. Private spills are ordinary memory.
+
+EH, block addresses, GC, varargs/non-C calling conventions, naked functions,
+dynamic/non-entry/inalloca allocas, preallocated/inalloca parameters,
+indirect/inline-asm/non-C/restricted calls, operand bundles and `musttail`
+exclude the function. Only the intrinsic families listed in the
+[design contract](docs/design.md#bounded-flattening-experiment) are accepted. Input
+switches are skipped unless `switch` is explicitly enabled to lower them first.
+Flattening runs after the other structural families and never rewrites its own
+dispatcher in that run. Its budgets apply to that current CFG, independently of
+earlier families. Reports separate unsupported/budget skips and actual changes.
+Generated dispatch branches do not inherit obsolete loop/profile metadata.
+
+Reoptimization can promote spills or recover control flow. This experiment has
+no anti-optimization, anti-debug or universal-survival guarantee. The detailed
+[flattening contract](docs/design.md#bounded-flattening-experiment) defines the
+semantic argument, exclusions and exact preflight bound.
+The [measured experiment](docs/re-evaluation.md#bounded-flattening-experiment)
+records native/reoptimized survival, Ghidra recovery and partial-analysis limits,
+and roughly 2.2–2.4x runtime on its synthetic workload. It does not justify a
+default change or a general resistance claim.
+
+For cost-sensitive experiments, the [comparison of block limits and LLVM
+promotion](docs/re-evaluation.md#reducing-the-cost-of-flattening) shows how much
+the result depends on function selection. On this corpus a five-block cap kept
+two of the five functions and brought runtime within 6% of the ordinary build.
+
 ## Transformation contract
 
-For a scalar integer of width `w`, both identities preserve addition modulo `2^w`:
+For the default arithmetic profile, both identities preserve scalar integer
+addition modulo `2^w`:
 
 ```text
 a + b = (a XOR b) + ((a AND b) << 1)

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Add an explicit `flatten` experiment with whole-function preflight, bounded
+  SSA dispatch and private scalar spills. Preserve profile defaults and skip
+  unsupported CFG/ABI/stack cases. Record native/reoptimized behavior, process
+  cost and Ghidra counterevidence using complete ELF-symbol footprint counts.
+
+- Bound string decoder instructions independently of encoded bytes with a
+  module-wide load budget; skip whole globals that exceed it. Validate CMake
+  transform delimiters and isolate parser state from consumer variables.
+
+- Add explicit modular transform masks and bounded opt-in CFG/backedge routing,
+  switch lowering, constant splitting and private scalar-load string encoding.
+  Keep arithmetic and general profile defaults unchanged; preserve PHIs, branch
+  weights, loop metadata and processed-function behavior.
+- Extend semantic/native and installed-package checks and add a separate Ghidra
+  evaluator for the experimental framework; no universal protection claim.
+
 - Add installed compiler-only CMake consumption and per-target seed, cap and
   reporting options, with an independent two-target C++ example.
 - State reverse-engineering resistance as the project's goal and distinguish

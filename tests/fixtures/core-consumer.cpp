@@ -42,6 +42,28 @@ int main() {
     if (rejected) return 1;
     llvm::consumeError(rejected.takeError());
   }
+  // Invalid family masks and structural/data limits must fail before the
+  // valid addition can be changed by any enabled family.
+  for (unsigned option = 0; option < 12; ++option) {
+    irveil::Config invalid;
+    switch (option) {
+    case 0: invalid.transforms = 1u << 31; break;
+    case 1: invalid.profile = static_cast<irveil::Profile>(99); break;
+    case 2: invalid.maxEdgesPerFunction = 0; break;
+    case 3: invalid.maxSwitchCasesPerFunction = 257; break;
+    case 4: invalid.maxConstantsPerFunction = 4097; break;
+    case 5: invalid.maxStringBytesPerModule = 65537; break;
+    case 6: invalid.maxStringLoadsPerModule = 65537; break;
+    case 7: invalid.maxStringLoadsPerModule = 0; break;
+    case 8: invalid.maxFlattenBlocksPerFunction = 0; break;
+    case 9: invalid.maxFlattenBlocksPerFunction = 65; break;
+    case 10: invalid.maxFlattenInstructionsPerFunction = 0; break;
+    case 11: invalid.maxFlattenInstructionsPerFunction = 4097; break;
+    }
+    auto rejected = irveil::applyObfuscation(module, invalid);
+    if (rejected) return 6;
+    llvm::consumeError(rejected.takeError());
+  }
   auto transformed = irveil::applyObfuscation(module, {});
   if (!transformed) {
     llvm::logAllUnhandledErrors(transformed.takeError(), llvm::errs());

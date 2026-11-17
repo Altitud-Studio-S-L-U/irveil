@@ -57,7 +57,7 @@ def annotations(names):
     )
 
 
-def exhaustive_module():
+def exhaustive_module(opcode="add", predicate=None):
     """Compare every small bit-vector pair to LLVM add, outside selected code."""
     pieces = ['source_filename = "exhaustive.ll"\n',
               'target triple = "x86_64-pc-linux-gnu"\n',
@@ -105,7 +105,20 @@ passed:
     for width in range(4, 9):
         pieces.append(f"  %combined{width} = or i32 %combined{width - 1}, %r{width}\n")
     pieces.append("  ret i32 %combined8\n}\n")
-    return "".join(pieces)
+    source = "".join(pieces)
+    if opcode != "add" or predicate:
+        for width in range(2, 9):
+            operation = f"icmp {predicate}" if predicate else opcode
+            result_type = "i1" if predicate else f"i{width}"
+            source = source.replace(f"define i{width} @small{width}", f"define {result_type} @small{width}")
+            source = source.replace(f"%sum = add i{width} %a, %b", f"%sum = {operation} i{width} %a, %b")
+            source = source.replace(f"ret i{width} %sum", f"ret {result_type} %sum")
+            source = source.replace(f"call i{width} @small{width}", f"call {result_type} @small{width}")
+            source = source.replace(f"%expected = trunc i16 %wide_expected to i{width}",
+                                    f"%expected = {operation} i{width} %small_a, %small_b")
+            source = source.replace(f"%equal = icmp eq i{width} %actual, %expected",
+                                    f"%equal = icmp eq {result_type} %actual, %expected")
+    return source
 
 
 class IRVeilTests(unittest.TestCase):
@@ -173,6 +186,819 @@ class IRVeilTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"^@", transformed, re.MULTILINE)),
                          len(re.findall(r"^@", source, re.MULTILINE)))
         self.assertRegex(transformed, r"declare i32 @external\(")
+
+    def test_opt_in_general_profile_semantics_and_structure(self):
+        # General is opt-in. Cover arithmetic, boolean logic, comparisons and
+        # conditional branches, including a PHI that depends on predecessor edges.
+        source = ('source_filename = "general.ll"\n'
+                  'target triple = "x86_64-pc-linux-gnu"\n'
+                  + annotations(["general"]) + """
+define i32 @general(i32 %a, i32 %b) {
+entry:
+  %sum = add i32 %a, %b
+  %difference = sub i32 %sum, %b
+  %mask = and i32 %a, %b
+  %either = or i32 %a, %b
+  %different = xor i32 %a, %b
+  %cmp = icmp ult i32 %a, %b
+  br i1 %cmp, label %yes, label %no
+yes:
+  %left = add i32 %difference, %mask
+  br label %exit
+no:
+  %right = sub i32 %either, %different
+  br label %exit
+exit:
+  %value = phi i32 [ %left, %yes ], [ %right, %no ]
+  ret i32 %value
+}
+define i32 @main() {
+entry:
+  %first = call i32 @general(i32 19, i32 3)
+  %second = call i32 @general(i32 3, i32 19)
+  %total = add i32 %first, %second
+  %ok = icmp eq i32 %total, 9
+  %bad = xor i1 %ok, true
+  %exit = zext i1 %bad to i32
+  ret i32 %exit
+}
+""")
+        # The default arithmetic-only profile must leave the branch and its
+        # original comparison unchanged.
+        default = function_body(self.transform(source), "general")
+        self.assertIn("icmp ult i32 %a, %b", default)
+        self.assertIn("sub i32", default)
+        for seed in [0, 1, 42]:
+            with self.subTest(seed=seed):
+                output = self.transform(source, f"irveil<profile=general;seed={seed}>")
+                body = function_body(output, "general")
+                self.assertIn("irveil.cmp.inverted", body)
+                self.assertIn("irveil.branch.condition", body)
+                self.assertIn("irveil.sub.not", body)
+                self.assertIn("irveil.bool.", body)
+                self.assertIn("phi i32", body)
+                path = self.work / f"general-{seed}.ll"
+                path.write_text(output, encoding="utf-8")
+                self.checked([self.llvm / "lli", path])
+
+    def test_general_profile_clang_integration(self):
+        flags = ("-Xclang", "-load", "-Xclang", str(self.plugin),
+                 "-mllvm", "-irveil-profile=general")
+        baseline = self.compile_demo("general-plain", "-O2")
+        transformed = self.compile_demo("general-clang", "-O2", plugin=True, extra=flags)
+        expected = self.checked([baseline, "10000"]).stdout
+        self.assertEqual(self.checked([transformed, "10000"]).stdout, expected)
+
+    def test_general_profile_invalid_options_and_cap(self):
+        source = self.fixture("selection.ll")
+        for option in ["profile=", "profile=other", "profile=general;profile=general"]:
+            with self.subTest(option=option):
+                result = execute([
+                    self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                    f"-passes=irveil<{option}>", "-disable-output", "-"
+                ], input_text=source)
+                self.assertNotEqual(result.returncode, 0)
+        capped = self.transform(source, "irveil<profile=general;max-adds=1>")
+        body = function_body(capped, "protected")
+        self.assertEqual(len(re.findall(r"add i32 %a, %b", body)), 7)
+
+    def test_modular_selection_rejection_and_branch_weights(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i32 %a, i32 %b, i1 %c) {
+entry:
+  %r = sub i32 %a, %b
+  br i1 %c, label %yes, label %no, !prof !0
+yes:
+  ret i32 %r
+no:
+  ret i32 %a
+}
+!0 = !{!"branch_weights", i32 90, i32 10}
+'''
+        unchanged = self.transform(source, "verify")
+        self.assertEqual(canonical_ir(unchanged), canonical_ir(self.transform(
+            source, "irveil<profile=general;transforms=none>")))
+        branch = self.transform(source, "irveil<transforms=branches>")
+        self.assertIn("sub i32 %a, %b", branch)
+        self.assertIn('!{!"branch_weights", i32 10, i32 90}', branch)
+        for option in ["transforms=", "transforms=adds+", "transforms=+adds",
+                       "transforms=adds++cfg", "transforms=adds+adds", "transforms=other",
+                       "transforms=none+adds", "transforms=none;transforms=cfg",
+                       "max-edges=0", "max-edges=257", "max-switch-cases=257",
+                       "max-constants=4097", "max-string-bytes=65537",
+                       "max-string-loads=0", "max-string-loads=65537",
+                       "max-string-loads=1;max-string-loads=2"]:
+            with self.subTest(option=option):
+                result = execute([self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                                  f"-passes=irveil<{option}>", "-disable-output", "-"], input_text=source)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_cfg_loop_backedges_switch_phi_multiplicity_and_limits(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i32 %n, i32 %choice) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %latch ]
+  %next = add i32 %i, 1
+  %more = icmp ult i32 %i, %n
+  br i1 %more, label %latch, label %dispatch
+latch:
+  br label %loop
+dispatch:
+  switch i32 %choice, label %shared [ i32 0, label %zero
+                                   i32 1, label %shared
+                                   i32 2, label %shared ]
+zero:
+  ret i32 %i
+shared:
+  %v = phi i32 [ 17, %dispatch ], [ 17, %dispatch ], [ 17, %dispatch ]
+  ret i32 %v
+}
+define i32 @main() {
+  %a = call i32 @f(i32 4, i32 0)
+  %b = call i32 @f(i32 0, i32 1)
+  %c = call i32 @f(i32 2, i32 2)
+  %d = call i32 @f(i32 3, i32 -1)
+  %ab = add i32 %a, %b
+  %cd = add i32 %c, %d
+  %all = add i32 %ab, %cd
+  %bad = icmp ne i32 %all, 55
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        for families in ["cfg", "loops", "switch", "cfg+loops+switch"]:
+            with self.subTest(families=families):
+                pipeline = f"irveil<transforms={families}>"
+                output = self.transform(source, pipeline)
+                body = function_body(output, "f")
+                self.assertEqual("irveil.loop.edge" in body, "loops" in families)
+                self.assertEqual("irveil.cfg.edge" in body, "cfg" in families)
+                self.assertEqual("switch i32" in body, "switch" not in families)
+                # Reparse both sides: LLVM may reorder diagnostic predecessor comments.
+                self.assertEqual(canonical_ir(self.transform(output, "verify")),
+                                 canonical_ir(self.transform(output, pipeline)))
+                path = self.work / (families.replace("+", "-") + ".ll")
+                path.write_text(output)
+                self.checked([self.llvm / "lli", path])
+        capped = function_body(self.transform(source, "irveil<transforms=cfg+loops;max-edges=1>"), "f")
+        self.assertEqual(len(re.findall(r"^irveil\.(?:cfg|loop)\.edge\d*:", capped, re.MULTILINE)), 1)
+        skipped = self.transform(source, "irveil<transforms=switch;max-switch-cases=2>")
+        self.assertIn("switch i32", function_body(skipped, "f"))
+
+    def test_loop_metadata_follows_the_new_backedge(self):
+        source = annotations(["f"]) + '''
+define void @f(i1 %again) {
+entry:
+  br label %loop
+loop:
+  br i1 %again, label %loop, label %exit, !llvm.loop !0
+exit:
+  ret void
+}
+!0 = distinct !{!0, !1}
+!1 = !{!"llvm.loop.unroll.disable"}
+'''
+        output = self.transform(source, "irveil<transforms=loops>")
+        self.assertRegex(output, r"irveil.loop.edge:[^\n]*\n\s+br label %loop, !llvm.loop")
+        self.assertNotRegex(output, r"br i1[^\n]*!llvm.loop")
+
+    def test_switch_self_edges_and_zero_case_preserve_phi_values(self):
+        source = annotations(["f", "zero"]) + '''
+define i8 @f() {
+entry:
+  br label %loop
+loop:
+  %i = phi i8 [ 0, %entry ], [ %next, %loop ], [ %next, %loop ]
+  %next = add i8 %i, 1
+  switch i8 %i, label %loop [ i8 0, label %loop
+                             i8 2, label %exit ]
+exit:
+  %r = phi i8 [ %next, %loop ]
+  ret i8 %r
+}
+define i8 @zero() {
+entry:
+  switch i8 0, label %exit []
+exit:
+  %r = phi i8 [ 17, %entry ]
+  ret i8 %r
+}
+define i32 @main() {
+  %f = call i8 @f()
+  %z = call i8 @zero()
+  %sum = add i8 %f, %z
+  %bad = icmp ne i8 %sum, 20
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        for families in ["switch", "cfg+loops+switch", "adds+constants+switch"]:
+            with self.subTest(families=families):
+                pipeline = f"irveil<transforms={families}>"
+                output = self.transform(source, pipeline)
+                self.assertNotIn("switch i8", output)
+                path = self.work / "switch-self-edge.ll"
+                path.write_text(output)
+                self.checked([self.llvm / "lli", path])
+                self.assertEqual(canonical_ir(self.transform(output, "verify")),
+                                 canonical_ir(self.transform(output, pipeline)))
+
+    def test_flatten_is_opt_in_bounded_deterministic_and_idempotent(self):
+        source = self.fixture("flatten.ll")
+        original = canonical_ir(self.transform(source, "verify"))
+        # The default still rewrites arithmetic; it must not enable flattening.
+        self.assertNotIn("irveil.flatten", function_body(self.transform(source), "flat"))
+        for options in ["max-flatten-blocks=1", "max-flatten-instructions=1"]:
+            self.assertEqual(original, canonical_ir(self.transform(
+                source, f"irveil<transforms=flatten;{options}>")))
+        outputs = []
+        for seed in [0, 42, 18446744073709551615]:
+            pipeline = f"irveil<transforms=flatten;seed={seed}>"
+            output = self.transform(source, pipeline)
+            body = function_body(output, "flat")
+            self.assertIn("irveil.flatten.dispatch", body)
+            self.assertIn("switch i32 %irveil.flatten.state", body)
+            self.assertIn('"irveil.flattened"', output)
+            self.assertNotIn("phi i32 [ %a,", body)
+            self.assertNotRegex(body, r"\b(?:load|store) volatile\b")
+            self.assertEqual(canonical_ir(output), canonical_ir(self.transform(source, pipeline)))
+            self.assertEqual(canonical_ir(self.transform(output, "verify")),
+                             canonical_ir(self.transform(output, pipeline)))
+            outputs.append(output)
+        self.assertEqual(len(set(outputs)), 3)
+        count = lambda body: sum(bool(re.match(r"^  (?:%[-.\w]+ = )?[a-z]+(?: |$)", line))
+                                 for line in body.splitlines())
+        before = count(function_body(original, "flat"))
+        for cap in [1, 8, 16, 32, 64, 128, 256, 4096]:
+            output = self.transform(source, f"irveil<transforms=flatten;max-flatten-instructions={cap}>")
+            self.assertLessEqual(count(function_body(output, "flat")) - before, cap)
+            if '"irveil.flattened"' not in output:
+                self.assertEqual(original, canonical_ir(output))
+        for option in ["max-flatten-blocks=0", "max-flatten-blocks=65",
+                       "max-flatten-instructions=0", "max-flatten-instructions=4097",
+                       "transforms=flatten+flatten"]:
+            result = execute([self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                              f"-passes=irveil<{option}>", "-disable-output", "-"], input_text=source)
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_flatten_parallel_phis_critical_edges_and_reoptimization(self):
+        # Private spill traffic must remain compatible with externally pure
+        # memory effects, including when another optimizer pipeline runs later.
+        source = self.fixture("flatten.ll").replace(
+            "@flat(i32 %n, i32 %a, i32 %b) {",
+            "@flat(i32 %n, i32 %a, i32 %b) memory(none) {")
+        reference = source[source.index("define i32 @flat"):].replace("@flat(", "@reference(")
+        source += reference + '''
+define i32 @main() {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %ok ]
+  %n = urem i32 %i, 9
+  %a = mul i32 %i, 16777619
+  %b = xor i32 %a, -2147483648
+  %expected = call i32 @reference(i32 %n, i32 %a, i32 %b)
+  %actual = call i32 @flat(i32 %n, i32 %a, i32 %b)
+  %equal = icmp eq i32 %actual, %expected
+  br i1 %equal, label %ok, label %bad
+ok:
+  %next = add i32 %i, 1
+  %more = icmp ult i32 %next, 4096
+  br i1 %more, label %loop, label %done
+done:
+  ret i32 0
+bad:
+  ret i32 1
+}
+'''
+        for seed in [0, 42]:
+            for pipeline in [f"irveil<transforms=flatten;seed={seed}>",
+                             f"irveil<transforms=adds+sub+bitwise+cmp+branches+cfg+loops+constants+flatten;seed={seed};max-flatten-blocks=64;max-flatten-instructions=4096>"]:
+                for optimize in ["", ",default<O2>", ",default<O3>"]:
+                    with self.subTest(seed=seed, pipeline=pipeline, optimize=optimize):
+                        output = self.transform(source, pipeline + optimize)
+                        self.assertIn('"irveil.flattened"', output)
+                        path = self.work / "flatten-phi-check.ll"
+                        path.write_text(output)
+                        self.checked([self.llvm / "lli", path])
+
+    def test_flatten_exclusions_leave_the_entire_function_unchanged(self):
+        template = '''
+define i32 @f(i1 %c, i32 %n) {
+entry:
+SETUP
+  br i1 %c, label %left, label %right
+left:
+LEFT
+  ret i32 1
+right:
+  ret i32 2
+}
+'''
+        variants = [
+            template.replace("SETUP", "  %p = alloca i8, i32 %n").replace("LEFT", ""),
+            template.replace("SETUP", "").replace("LEFT", "  %p = alloca i32"),
+            template.replace("SETUP", "  %p = alloca inalloca i32").replace("LEFT", ""),
+            'declare ptr @llvm.stacksave.p0()\n' + template.replace(
+                "SETUP", "  %p = call ptr @llvm.stacksave.p0()").replace("LEFT", ""),
+            'declare i32 @callee(i1, i32)\n' + template.replace("SETUP", "").replace("LEFT", "").replace(
+                "  ret i32 2", "  %v = musttail call i32 @callee(i1 %c, i32 %n)\n  ret i32 %v"),
+            template.replace("i32 %n)", "i32 %n, ptr %fp)").replace(
+                "SETUP", "  %v = call i32 %fp()").replace("LEFT", ""),
+            template.replace("i32 %n)", "i32 %n, ...)").replace("SETUP", "").replace("LEFT", ""),
+            'declare void @restricted() convergent\n' + template.replace(
+                "SETUP", "  call void @restricted()").replace("LEFT", ""),
+            template.replace("SETUP", "").replace("LEFT", "").replace(
+                "  br i1 %c, label %left, label %right", "  br label %left"),
+            template.replace("SETUP", "").replace("LEFT", "").replace(
+                "  br i1 %c, label %left, label %right", "  br label %left").replace(
+                "  ret i32 1", "  br i1 %c, label %right, label %right"),
+            '''define i32 @f(i1 %c, i32 %n) {
+entry:
+  br i1 %c, label %left, label %right
+left:
+  br label %exit
+right:
+  br label %exit
+exit:
+  %v = phi i128 [ 0, %left ], [ 1, %right ]
+  %r = trunc i128 %v to i32
+  ret i32 %r
+}
+''',
+        ]
+        for index, body in enumerate(variants):
+            with self.subTest(index=index):
+                source = annotations(["f"]) + body
+                self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+                    self.transform(source, "irveil<transforms=flatten>")))
+
+    def test_flatten_preserves_intrinsic_operand_origins(self):
+        for declaration, origin, call in [
+            ("declare void @llvm.stackprotector(ptr, ptr)", "%slot",
+             "call void @llvm.stackprotector(ptr %arg, ptr %derived)"),
+            ("declare void @llvm.init.trampoline(ptr, ptr, ptr)\ndeclare void @nested(ptr nest)", "@nested",
+             "call void @llvm.init.trampoline(ptr %arg, ptr %derived, ptr %slot)"),
+        ]:
+            with self.subTest(intrinsic=declaration):
+                source = annotations(["f"]) + declaration + f'''
+define void @f(ptr %arg) {{
+entry:
+  %slot = alloca ptr
+  br label %derive
+derive:
+  %derived = getelementptr i8, ptr {origin}, i64 0
+  br label %use
+use:
+  {call}
+  ret void
+}}
+'''
+                self.assertEqual(canonical_ir(self.transform(source, "verify")),
+                                 canonical_ir(self.transform(source, "irveil<transforms=flatten>")))
+
+    def test_structural_passes_skip_llvm_presplit_coroutines(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i1 %c) presplitcoroutine {
+entry:
+  br i1 %c, label %left, label %right
+left:
+  ret i32 1
+right:
+  ret i32 0
+}
+'''
+        original = canonical_ir(self.transform(source, "verify"))
+        for family in ["cfg", "flatten"]:
+            with self.subTest(family=family):
+                self.assertEqual(original, canonical_ir(self.transform(source, f"irveil<transforms={family}>")))
+
+    def test_flatten_requires_explicit_switch_lowering_for_input_switches(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i32 %c, i32 %a) {
+entry:
+  switch i32 %c, label %other [ i32 0, label %zero
+                               i32 1, label %one ]
+zero:
+  %z = add i32 %a, 1
+  ret i32 %z
+one:
+  %o = sub i32 %a, 1
+  ret i32 %o
+other:
+  ret i32 %a
+}
+define i32 @main() {
+  %a = call i32 @f(i32 0, i32 19)
+  %b = call i32 @f(i32 1, i32 19)
+  %c = call i32 @f(i32 -1, i32 19)
+  %ab = add i32 %a, %b
+  %sum = add i32 %ab, %c
+  %bad = icmp ne i32 %sum, 57
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+            self.transform(source, "irveil<transforms=flatten>")))
+        output = self.transform(source, "irveil<transforms=switch+flatten>")
+        self.assertIn('"irveil.flattened"', output)
+        self.assertIn("irveil.flatten.dispatch", output)
+        path = self.work / "flatten-switch.ll"
+        path.write_text(output)
+        self.checked([self.llvm / "lli", path])
+
+    def test_flatten_native_modes_memory_recursion_and_reoptimization(self):
+        fixture = FIXTURES / "flatten-corpus.cpp"
+        expected = None
+        for optimization in ["-O0", "-O1", "-O2", "-O3"]:
+            for enabled in [False, True]:
+                with self.subTest(optimization=optimization, enabled=enabled):
+                    binary = self.work / "flatten-native"
+                    plugin = (["-Xclang", "-load", "-Xclang", self.plugin,
+                               f"-fpass-plugin={self.plugin}", "-mllvm", "-irveil-transforms=flatten",
+                               "-mllvm", "-irveil-report"] if enabled else [])
+                    self.checked([self.llvm / "clang++", "-std=c++17", optimization, "-g",
+                                  "-I", self.include, *plugin, fixture, "-o", binary])
+                    actual = self.checked([binary]).stdout
+                    self.assertEqual(len(actual.splitlines()), 633)
+                    if expected is None: expected = actual
+                    self.assertEqual(actual, expected)
+                    if enabled and optimization in ["-O2", "-O3"]:
+                        ir = self.work / "flatten-native.ll"
+                        emitted = self.checked([self.llvm / "clang++", "-std=c++17", optimization,
+                            "-g", "-I", self.include, *plugin, "-S", "-emit-llvm", fixture, "-o", ir])
+                        self.assertRegex(emitted.stderr, r"flattened=[1-9]")
+                        # Clang normally discards SSA/block names. Check the
+                        # transformed control structure, rather than debug names.
+                        self.assertTrue('"irveil.flattened"' in ir.read_text())
+                        self.assertRegex(function_body(ir.read_text(), "re_flat_branch32"), r"\bswitch i32 %")
+                        optimized = self.work / "flatten-reoptimized.ll"
+                        self.checked([self.llvm / "opt", f"-passes=default<{optimization[1:]}>" ,
+                                      "-verify-each", "-S", ir, "-o", optimized])
+                        self.checked([self.llvm / "clang++", optimization, optimized, "-o", binary])
+                        self.assertEqual(self.checked([binary]).stdout, expected)
+
+    def test_flatten_sanitizers_and_concurrent_atomic_calls(self):
+        expected = None
+        for enabled in [False, True]:
+            binary = self.work / "flatten-sanitized"
+            plugin = (["-Xclang", "-load", "-Xclang", self.plugin, f"-fpass-plugin={self.plugin}",
+                "-mllvm", "-irveil-transforms=flatten", "-mllvm", "-irveil-max-flatten-blocks=64",
+                "-mllvm", "-irveil-max-flatten-instructions=4096", "-mllvm", "-irveil-report"] if enabled else [])
+            built = self.checked([self.llvm / "clang++", "-std=c++17", "-O1", "-I", self.include,
+                "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
+                *plugin, FIXTURES / "flatten-corpus.cpp", "-o", binary])
+            actual = self.checked([binary]).stdout
+            if expected is None: expected = actual
+            self.assertEqual(actual, expected)
+            if enabled: self.assertRegex(built.stderr, r"flattened=[1-9]")
+        source = self.work / "flatten-threads.cpp"
+        source.write_text('''
+#include <irveil/Protect.h>
+#include <atomic>
+#include <thread>
+extern "C" IRVEIL_PROTECT unsigned step(unsigned i, std::atomic<unsigned> *p) {
+  auto old = p->fetch_add(1, std::memory_order_relaxed);
+  if (i & 1) { p->fetch_add(1, std::memory_order_relaxed); p->fetch_add(1, std::memory_order_relaxed); }
+  return old;
+}
+int main() {
+  std::atomic<unsigned> counter{0};
+  std::thread workers[4];
+  for (auto &worker : workers)
+    worker = std::thread([&] { for (unsigned i = 0; i < 10000; ++i) step(i, &counter); });
+  for (auto &worker : workers) worker.join();
+  return counter.load() != 80000;
+}
+''')
+        binary = self.work / "flatten-threads"
+        built = self.checked([self.llvm / "clang++", "-std=c++17", "-O2", "-pthread", "-I", self.include,
+            "-Xclang", "-load", "-Xclang", self.plugin, f"-fpass-plugin={self.plugin}",
+            "-mllvm", "-irveil-transforms=flatten", "-mllvm", "-irveil-report", source, "-o", binary])
+        self.assertIn("flattened=1", built.stderr)
+        self.checked([binary])
+
+    def test_cfg_excludes_personality_and_restricted_calls(self):
+        for restriction in ["convergent", "noduplicate", "returns_twice", "personality"]:
+            with self.subTest(restriction=restriction):
+                declaration = ("declare i32 @personality(...)\n" if restriction == "personality"
+                               else f"declare void @restricted() {restriction}\n")
+                function_attribute = " personality ptr @personality" if restriction == "personality" else ""
+                call = "" if restriction == "personality" else "  call void @restricted()\n"
+                source = (annotations(["f"]) + declaration +
+                          f"define void @f(){function_attribute} {{\nentry:\n" + call +
+                          "  br label %exit\nexit:\n  ret void\n}\n")
+                self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+                    self.transform(source, "irveil<transforms=cfg+loops+switch>")))
+
+    def test_undef_operands_are_frozen_for_subtraction_and_bitwise(self):
+        for opcode in ["sub", "and", "or", "xor"]:
+            with self.subTest(opcode=opcode):
+                source = (annotations(["f"]) + "define i8 @f(i8 %a) {\n" +
+                          f"  %r = {opcode} i8 %a, undef\n  ret i8 %r\n}}\n")
+                body = function_body(self.transform(source, "irveil<profile=general>"), "f")
+                self.assertEqual(body.count("undef"), 1)
+                self.assertIn("freeze i8 undef", body)
+                self.assertEqual(len(re.findall(r"\bfreeze i8\b", body)), 2)
+
+    def test_combined_net_instruction_expansion_obeys_family_budgets(self):
+        source = annotations(["f"]) + '''
+@s = private constant [2 x i8] c"X\\00"
+define i32 @f(i32 %a, i32 %b) {
+entry:
+  %byte = load i8, ptr @s
+  %diff = sub i32 %a, %b
+  %sum = add i32 %diff, 17
+  br label %loop
+loop:
+  %i = phi i8 [ 0, %entry ], [ %next, %loop ]
+  %next = add i8 %i, 1
+  switch i8 %i, label %loop [ i8 3, label %exit ]
+exit:
+  ret i32 %sum
+}
+'''
+        def count_instructions(body):
+            # Count opcode lines, excluding printed switch cases and labels.
+            return sum(bool(re.match(r"^  (?:%[-.\w]+ = )?[a-z]+(?: |$)", line))
+                       for line in body.splitlines())
+        original = count_instructions(function_body(self.transform(source, "verify"), "f"))
+        families = "adds+sub+bitwise+cmp+branches+cfg+loops+switch+constants+strings"
+        for cap in [1, 2, 3]:
+            pipeline = (f"irveil<transforms={families};max-adds={cap};max-edges=1;"
+                        "max-switch-cases=1;max-constants=1;max-string-loads=1>")
+            body = function_body(self.transform(source, pipeline), "f")
+            # M<=cap, E<=1, C<=1, S<=1, K<=1 and L<=1.
+            self.assertLessEqual(count_instructions(body) - original, 7 * cap + 6)
+            self.assertIn("irveil.string.byte", body)
+            self.assertNotIn("switch i8", body)
+
+    def test_exhaustive_general_integer_operations_and_all_predicates(self):
+        operations = [(op, None) for op in ["sub", "and", "or", "xor"]]
+        operations += [("icmp", p) for p in ["eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge"]]
+        for opcode, predicate in operations:
+            for seed in [0, 42]:
+                with self.subTest(opcode=opcode, predicate=predicate, seed=seed):
+                    source = exhaustive_module(opcode, predicate)
+                    output = self.transform(source, f"irveil<profile=general;seed={seed}>")
+                    path = self.work / "general-exhaustive.ll"
+                    path.write_text(output)
+                    self.checked([self.llvm / "lli", path])
+
+    def test_framework_corpus_native_and_optimized_semantics(self):
+        fixture = FIXTURES / "framework-corpus.cpp"
+        source = self.work / "framework.ll"
+        self.checked([self.llvm / "clang++", "-std=c++17", "-O0", "-Xclang", "-disable-O0-optnone",
+                      "-I", self.include, "-S", "-emit-llvm", fixture, "-o", source])
+        original = source.read_text()
+        baseline = self.work / "framework-plain"
+        self.checked([self.llvm / "clang++", "-O0", source, "-o", baseline])
+        expected = self.checked([baseline]).stdout
+        self.assertEqual(len(expected.splitlines()), 633)
+        for families in ["cfg", "loops", "switch", "constants", "strings",
+                         "adds+sub+bitwise+cmp+branches+cfg+loops+switch+constants+strings"]:
+            for seed in [0, 42]:
+                with self.subTest(families=families, seed=seed):
+                    transformed = self.transform(original, f"irveil<transforms={families};seed={seed}>")
+                    source.write_text(transformed)
+                    for optimization in ["-O0", "-O2"]:
+                        binary = self.work / "framework-transformed"
+                        self.checked([self.llvm / "clang++", optimization, source, "-o", binary])
+                        self.assertEqual(self.checked([binary]).stdout, expected)
+
+    def test_framework_sanitizers_and_concurrent_string_reads(self):
+        flags = ["-std=c++17", "-O1", "-I", self.include, "-fsanitize=address,undefined",
+                 "-fno-omit-frame-pointer", "-fno-sanitize-recover=all"]
+        source = FIXTURES / "framework-corpus.cpp"
+        expected = None
+        families = "adds+sub+bitwise+cmp+branches+cfg+loops+switch+constants+strings"
+        for enabled in [False, True]:
+            binary = self.work / f"framework-sanitized-{enabled}"
+            plugin = (["-Xclang", "-load", "-Xclang", self.plugin,
+                       f"-fpass-plugin={self.plugin}", "-mllvm", "-irveil-transforms=" + families]
+                      if enabled else [])
+            self.checked([self.llvm / "clang++", *flags, *plugin, source, "-o", binary])
+            actual = self.checked([binary]).stdout
+            if expected is None: expected = actual
+            else: self.assertEqual(actual, expected)
+        concurrent = self.work / "concurrent.cpp"
+        concurrent.write_text('''
+#include <irveil/Protect.h>
+#include <thread>
+IRVEIL_PROTECT unsigned byte(unsigned i) { return "parallel"[i % 9]; }
+int main() {
+  unsigned results[4] = {};
+  std::thread workers[4];
+  for (unsigned t = 0; t < 4; ++t)
+    workers[t] = std::thread([&,t] { for (unsigned i = 0; i < 10000; ++i) results[t] += byte(i); });
+  unsigned expected = 0;
+  constexpr unsigned reference[] = {112, 97, 114, 97, 108, 108, 101, 108, 0};
+  for (unsigned i = 0; i < 10000; ++i) expected += reference[i % 9];
+  for (auto &worker : workers) worker.join();
+  for (auto value : results) if (value != expected) return 1;
+}
+''')
+        binary = self.work / "concurrent"
+        built = self.checked([self.llvm / "clang++", "-std=c++17", "-O2", "-pthread",
+            "-I", self.include, "-Xclang", "-load", "-Xclang", self.plugin,
+            f"-fpass-plugin={self.plugin}", "-mllvm", "-irveil-transforms=strings",
+            "-mllvm", "-irveil-report", concurrent, "-o", binary])
+        self.assertIn("strings=1", built.stderr)
+        self.checked([binary])
+
+    def test_cfg_skips_eh_and_address_taken_functions(self):
+        source = annotations(["f"]) + '''
+@address = global ptr blockaddress(@f, %exit)
+define i32 @f() {
+entry:
+  br label %exit
+exit:
+  ret i32 0
+}
+'''
+        self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+            self.transform(source, "irveil<transforms=cfg+loops+switch>")))
+
+    def test_constant_encoding_values_caps_and_seed(self):
+        source = annotations(["f"]) + '''
+define i64 @f(i64 %a) {
+  %x = xor i64 %a, -9223372036854775808
+  %y = add i64 %x, 9223372036854775807
+  %z = sub i64 %y, -1
+  ret i64 %z
+}
+define i32 @main() {
+  %v = call i64 @f(i64 0)
+  %bad = icmp ne i64 %v, 0
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        outputs = []
+        for seed in [0, 42, 18446744073709551615]:
+            pipeline = f"irveil<transforms=constants;seed={seed}>"
+            output = self.transform(source, pipeline)
+            self.assertEqual(len(re.findall(r"%irveil.constant\d* =", output)), 3)
+            self.assertEqual(canonical_ir(output), canonical_ir(self.transform(output, pipeline)))
+            path = self.work / f"constants-{seed}.ll"
+            path.write_text(output)
+            self.checked([self.llvm / "lli", path])
+            outputs.append(output)
+        self.assertEqual(len(set(outputs)), 3)
+        output = self.transform(source, "irveil<transforms=constants;max-constants=1>")
+        self.assertEqual(len(re.findall(r"%irveil.constant\d* =", output)), 1)
+
+    def test_string_encoding_scalar_loads_metadata_and_budget(self):
+        source = annotations(["f", "g"]) + '''
+@s = private unnamed_addr constant [3 x i8] c"Az\\00"
+define i8 @f(i64 %index) {
+  %p = getelementptr [3 x i8], ptr @s, i64 0, i64 %index
+  %v = load i8, ptr %p, !range !0
+  ret i8 %v
+}
+define i8 @g() {
+  %v = load i8, ptr getelementptr ([3 x i8], ptr @s, i64 0, i64 1)
+  ret i8 %v
+}
+define i32 @main() {
+  %a = call i8 @f(i64 0)
+  %b = call i8 @g()
+  %c = call i8 @f(i64 2)
+  %x = xor i8 %a, 65
+  %y = xor i8 %b, 122
+  %z = or i8 %x, %y
+  %r = or i8 %z, %c
+  %exit = zext i8 %r to i32
+  ret i32 %exit
+}
+!0 = !{i8 0, i8 123}
+'''
+        for seed in [0, 1, 42]:
+            pipeline = f"irveil<transforms=strings;seed={seed}>"
+            output = self.transform(source, pipeline)
+            self.assertIn('!irveil.encoded', output)
+            self.assertNotIn('!range', function_body(output, "f"))
+            self.assertNotIn('c"Az\\00"', output)
+            self.assertEqual(len(re.findall(r"%irveil.string.byte\d* =", output)), 2)
+            self.assertEqual(canonical_ir(output), canonical_ir(self.transform(output, pipeline)))
+            path = self.work / f"strings-{seed}.ll"
+            path.write_text(output)
+            self.checked([self.llvm / "lli", path])
+        original = canonical_ir(self.transform(source, "verify"))
+        self.assertEqual(original, canonical_ir(self.transform(source,
+            "irveil<transforms=strings;max-string-bytes=2>")))
+
+    def test_strings_preserve_bytes_observed_by_assembly(self):
+        program = annotations(["reader"]) + r'''
+@s = private constant [2 x i8] c"A\00"
+define i8 @reader() {
+  %v = load i8, ptr @s
+  ret i8 %v
+}
+define i32 @main() {
+  %x = call i8 @reader()
+  %y = call i8 @observer()
+  %mismatch = icmp ne i8 %x, %y
+  %result = zext i1 %mismatch to i32
+  ret i32 %result
+}
+'''
+        observers = {
+            "inline": '''
+define i8 @observer() {
+  %v = call i8 asm sideeffect "movb .Ls(%rip), $0", "=q,~{memory}"()
+  ret i8 %v
+}
+''',
+            "module": '''
+module asm ".set irveil_asm_alias, .Ls"
+@irveil_asm_alias = external global i8
+define i8 @observer() {
+  %v = load i8, ptr @irveil_asm_alias
+  ret i8 %v
+}
+''',
+        }
+        for kind, observer in observers.items():
+            with self.subTest(kind=kind):
+                source = 'target triple = "x86_64-pc-linux-gnu"\n' + observer + program
+                for pipeline in ["verify", "irveil<transforms=strings>"]:
+                    ir = self.transform(source, pipeline)
+                    executable = self.work / f"strings-asm-{kind}"
+                    self.checked([self.llvm / "clang++", "-O0", "-x", "ir", "-", "-o", executable],
+                                 input_text=ir)
+                    self.checked([executable])
+                    self.assertNotIn("!irveil.encoded", ir)
+
+    def test_strings_reject_escapes_shared_volatile_atomic_and_wide_reads(self):
+        cases = [
+            ('declare void @escape(ptr)\n', 'call void @escape(ptr @s)'),
+            ('@alias = private alias [3 x i8], ptr @s\n', '%v = load i8, ptr @s'),
+            ('', '%v = load volatile i8, ptr @s'),
+            ('', '%v = load atomic i8, ptr @s unordered, align 1'),
+            ('', '%v = load i16, ptr @s, align 1'),
+            ('define i8 @unselected() { %v = load i8, ptr @s\n ret i8 %v }\n', '%v = load i8, ptr @s'),
+        ]
+        for prefix, use in cases:
+            with self.subTest(use=use, prefix=prefix):
+                source = (annotations(["f"]) + '@s = private constant [3 x i8] c"Az\\00"\n' +
+                          prefix + 'define void @f() {\n' + use + '\n ret void\n}\n')
+                self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+                    self.transform(source, "irveil<transforms=strings>")))
+
+    def test_string_default_load_budget_is_independent_of_byte_count(self):
+        source = (annotations(["f"]) + '@s = private constant [2 x i8] c"A\\00"\n' +
+                  'define i8 @f() {\n' +
+                  ''.join(f'  %v{i} = load i8, ptr @s\n' for i in range(4097)) +
+                  '  ret i8 %v4096\n}\n')
+        output = self.transform(source, "irveil<transforms=strings;max-string-bytes=2>")
+        self.assertEqual(len(re.findall(r"%irveil.string.byte\d* =", output)), 0)
+        self.assertIn('c"A\\00"', output)
+
+    def test_string_load_budget_is_module_wide_and_skips_whole_globals(self):
+        source = annotations(["f", "g"]) + '''
+@a = private constant [2 x i8] c"A\\00"
+@b = private constant [2 x i8] c"B\\00"
+@c = private constant [2 x i8] c"C\\00"
+define i8 @f() {
+  %a = load i8, ptr @a
+  %b = load i8, ptr @b
+  %c = load i8, ptr @c
+  %ab = add i8 %a, %b
+  %abc = add i8 %ab, %c
+  ret i8 %abc
+}
+define i8 @g() {
+  %a = load i8, ptr @a
+  %b = load i8, ptr @b
+  %ab = add i8 %a, %b
+  ret i8 %ab
+}
+define i32 @main() {
+  %f = call i8 @f()
+  %g = call i8 @g()
+  %f_bad = icmp ne i8 %f, -58
+  %g_bad = icmp ne i8 %g, -125
+  %bad = or i1 %f_bad, %g_bad
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        for cap, expected in [(1, 1), (2, 2), (3, 3), (5, 5), (65536, 5)]:
+            with self.subTest(cap=cap):
+                pipeline = f"irveil<transforms=strings;max-string-loads={cap}>"
+                output = self.transform(source, pipeline)
+                self.assertEqual(len(re.findall(r"%irveil.string.byte\d* =", output)), expected)
+                if cap == 3:
+                    self.assertRegex(output, r'@b = private constant \[2 x i8\] c"B\\00"\n')
+                    self.assertRegex(output, r'@c = private constant.*!irveil.encoded')
+                path = self.work / "string-budget.ll"
+                path.write_text(output)
+                self.checked([self.llvm / "lli", path])
+                self.assertEqual(canonical_ir(output), canonical_ir(self.transform(output, pipeline)))
 
     def test_per_function_cap_and_bounded_expansion(self):
         source = self.fixture("selection.ll")
@@ -357,7 +1183,12 @@ class IRVeilTests(unittest.TestCase):
                 ("-irveil-seed=0x10", "unsigned decimal"),
                 ("-irveil-seed=18446744073709551616", "unsigned decimal"),
                 ("-irveil-max-adds=0", "1..4096"),
-                ("-irveil-max-adds=4097", "1..4096")]:
+                ("-irveil-max-adds=4097", "1..4096"),
+                ("-irveil-max-string-loads=0", "max-string-loads"),
+                ("-irveil-max-string-loads=65537", "max-string-loads"),
+                ("-irveil-max-flatten-blocks=0", "max-flatten-blocks"),
+                ("-irveil-max-flatten-blocks=65", "max-flatten-blocks"),
+                ("-irveil-max-flatten-instructions=4097", "max-flatten-instructions")]:
             with self.subTest(option=option):
                 result = execute([*command, "-mllvm", option])
                 self.assertNotEqual(result.returncode, 0)

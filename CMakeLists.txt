@@ -12,7 +12,8 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-add_library(IRVeilCore STATIC src/Pass.cpp)
+add_library(IRVeilCore STATIC src/Pass.cpp src/Config.cpp src/ArithmeticTransform.cpp
+  src/InstructionTransform.cpp src/ControlFlowTransform.cpp src/DataTransform.cpp src/FlattenTransform.cpp)
 add_library(IRVeil::Core ALIAS IRVeilCore)
 set_target_properties(IRVeilCore PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME Core)
 target_compile_features(IRVeilCore PUBLIC cxx_std_17)
@@ -39,7 +40,7 @@ configure_file(src/Version.h.in generated/Version.h @ONLY)
 add_library(IRVeilPass MODULE src/Plugin.cpp)
 add_library(IRVeil::Pass ALIAS IRVeilPass)
 set_target_properties(IRVeilPass PROPERTIES PREFIX "" EXPORT_NAME Pass)
-target_include_directories(IRVeilPass PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_include_directories(IRVeilPass PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated src)
 target_link_libraries(IRVeilPass PRIVATE IRVeil::Core)
 target_compile_options(IRVeilPass PRIVATE -Wall -Wextra -Wpedantic)
 

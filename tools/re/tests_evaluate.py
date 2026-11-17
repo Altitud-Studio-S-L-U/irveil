@@ -60,6 +60,19 @@ class EvaluationControls(unittest.TestCase):
         self.assertNotEqual(EVALUATE.normalize_c(left), EVALUATE.normalize_c(right.replace("17", "18")))
         self.assertIn("WARNING", EVALUATE.normalize_c("/* WARNING */ " + left))
 
+    def test_custom_corpus_keeps_mapping_and_repeat_controls_strict(self):
+        names = ("re_cfg32", "re_string8")
+        symbols = "0000000000401000 0000000000000004 T re_cfg32\n0000000000401010 0000000000000004 T re_string8"
+        self.assertEqual([item["id"] for item in EVALUATE.mapped_functions(symbols, names)], list(names))
+        facts = {name: {"nativeInstructions": 2, "normalizedC": "return 0;"} for name in names}
+        self.assertEqual(EVALUATE.compare_control(facts, copy.deepcopy(facts), names)["functions"], 2)
+        other = copy.deepcopy(facts)
+        other["re_cfg32"]["normalizedC"] = "return 1;"
+        with self.assertRaisesRegex(ValueError, "unstable"):
+            EVALUATE.compare_control(facts, other, names)
+        with self.assertRaisesRegex(ValueError, "function set"):
+            EVALUATE.compare_control(facts, {"re_cfg32": facts["re_cfg32"]}, names)
+
     def fixture(self, directory):
         manifest = {"binarySha256": "a" * 64, "functions": []}
         report = {"schemaVersion": 1, "status": "completed", "analysisTimedOut": False,

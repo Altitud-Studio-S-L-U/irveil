@@ -8,9 +8,13 @@
 
 namespace irveil {
 
+enum class Profile { Arithmetic, General };
+
 struct Config {
   std::uint64_t seed = 0;
+  // In General profile this bounds all eligible rewrites per function.
   std::uint32_t maxAddsPerFunction = 256;
+  Profile profile = Profile::Arithmetic;
 };
 
 struct Statistics {
@@ -18,6 +22,10 @@ struct Statistics {
   std::uint64_t selectedFunctions = 0;
   std::uint64_t changedFunctions = 0;
   std::uint64_t rewrittenAdds = 0;
+  std::uint64_t rewrittenSubtracts = 0;
+  std::uint64_t rewrittenBitwise = 0;
+  std::uint64_t rewrittenComparisons = 0;
+  std::uint64_t rewrittenBranches = 0;
 };
 
 // Selects functions carrying Clang's annotate("irveil") in llvm.global.annotations.

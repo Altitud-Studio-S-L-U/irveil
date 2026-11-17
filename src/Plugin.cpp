@@ -20,6 +20,9 @@ llvm::cl::opt<std::string> ClangSeed(
 llvm::cl::opt<std::string> ClangMaxAdds(
     "irveil-max-adds", llvm::cl::desc("IRVeil additions per function (1..4096)"),
     llvm::cl::init("256"));
+llvm::cl::opt<std::string> ClangProfile(
+    "irveil-profile", llvm::cl::desc("IRVeil profile: arithmetic or general"),
+    llvm::cl::init("arithmetic"));
 llvm::cl::opt<bool> ClangReport(
     "irveil-report", llvm::cl::desc("Report IRVeil configuration and counters"),
     llvm::cl::init(false));
@@ -42,11 +45,12 @@ bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
 
   bool seenSeed = false;
   bool seenCap = false;
+  bool seenProfile = false;
   while (!name.empty()) {
     const auto option = name.split(';');
     const auto keyValue = option.first.split('=');
     std::uint64_t value;
-    if (!parseUnsignedDecimal(keyValue.second, value))
+    if (keyValue.first != "profile" && !parseUnsignedDecimal(keyValue.second, value))
       return false;
 
     if (keyValue.first == "seed" && !seenSeed) {
@@ -56,6 +60,10 @@ bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
                value <= 4096) {
       config.maxAddsPerFunction = static_cast<std::uint32_t>(value);
       seenCap = true;
+    } else if (keyValue.first == "profile" && !seenProfile &&
+               (keyValue.second == "general" || keyValue.second == "arithmetic")) {
+      config.profile = keyValue.second == "general" ? irveil::Profile::General : irveil::Profile::Arithmetic;
+      seenProfile = true;
     } else {
       return false;
     }
@@ -78,6 +86,10 @@ irveil::Config clangConfig() {
     llvm::report_fatal_error(
         "IRVeil: -irveil-max-adds must be a decimal integer in 1..4096", false);
   config.maxAddsPerFunction = static_cast<std::uint32_t>(cap);
+  if (ClangProfile.getValue() == "general")
+    config.profile = irveil::Profile::General;
+  else if (ClangProfile.getValue() != "arithmetic")
+    llvm::report_fatal_error("IRVeil: -irveil-profile must be arithmetic or general", false);
   return config;
 }
 

@@ -12,7 +12,7 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-add_library(IRVeilCore STATIC src/Pass.cpp src/ArithmeticTransform.cpp)
+add_library(IRVeilCore STATIC src/Pass.cpp src/ArithmeticTransform.cpp src/InstructionTransform.cpp)
 add_library(IRVeil::Core ALIAS IRVeilCore)
 set_target_properties(IRVeilCore PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME Core)
 target_compile_features(IRVeilCore PUBLIC cxx_std_17)

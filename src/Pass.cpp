@@ -1,5 +1,5 @@
 #include "irveil/Pass.h"
-#include "ArithmeticTransform.h"
+#include "InstructionTransform.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -79,24 +79,23 @@ std::uint64_t nextRandom(std::uint64_t &state) {
   return value ^ (value >> 31);
 }
 
-llvm::SmallVector<llvm::BinaryOperator *, 16>
-collectAdds(llvm::Function &function, std::uint32_t cap) {
-  llvm::SmallVector<llvm::BinaryOperator *, 16> additions;
+struct Candidate {
+  llvm::Instruction *instruction;
+  OperationKind kind;
+};
+
+llvm::SmallVector<Candidate, 16> collectCandidates(llvm::Function &function,
+                                                    std::uint32_t cap, bool general) {
+  llvm::SmallVector<Candidate, 16> candidates;
   for (llvm::BasicBlock &block : function) {
     for (llvm::Instruction &instruction : block) {
-      auto *add = llvm::dyn_cast<llvm::BinaryOperator>(&instruction);
-      if (!add || add->getOpcode() != llvm::Instruction::Add)
-        continue;
-      const auto *type = llvm::dyn_cast<llvm::IntegerType>(add->getType());
-      if (!type || type->getBitWidth() < 2 || type->getBitWidth() > 64)
-        continue;
-
-      additions.push_back(add);
-      if (additions.size() == cap)
-        return additions;
+      const auto kind = classifyInstruction(instruction, general);
+      if (kind == OperationKind::Unsupported) continue;
+      candidates.push_back({&instruction, kind});
+      if (candidates.size() == cap) return candidates;
     }
   }
-  return additions;
+  return candidates;
 }
 
 } // namespace
@@ -115,21 +114,27 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
       continue;
 
     // Snapshot only original candidates; generated adds cannot enter this run.
-    auto additions = collectAdds(*function, config.maxAddsPerFunction);
-    if (additions.empty())
+    auto candidates = collectCandidates(*function, config.maxAddsPerFunction,
+                                        config.profile == Profile::General);
+    if (candidates.empty())
       continue;
 
     std::uint64_t state = functionSeed(function->getName(), config.seed);
-    for (llvm::BinaryOperator *add : additions) {
-      const auto identity = (nextRandom(state) & 1) != 0
-                                ? ArithmeticIdentity::XorCarry
-                                : ArithmeticIdentity::DoubleOrMinusXor;
-      rewriteArithmetic(*add, identity);
+    for (const Candidate &candidate : candidates) {
+      const auto selector = nextRandom(state);
+      switch (candidate.kind) {
+      case OperationKind::Add: ++statistics.rewrittenAdds; break;
+      case OperationKind::Sub: ++statistics.rewrittenSubtracts; break;
+      case OperationKind::Bitwise: ++statistics.rewrittenBitwise; break;
+      case OperationKind::Comparison: ++statistics.rewrittenComparisons; break;
+      case OperationKind::Branch: ++statistics.rewrittenBranches; break;
+      case OperationKind::Unsupported: llvm_unreachable("Unsupported candidate");
+      }
+      rewriteInstruction(*candidate.instruction, candidate.kind, selector);
     }
 
     function->addFnAttr(ProcessedAttribute);
     ++statistics.changedFunctions;
-    statistics.rewrittenAdds += additions.size();
   }
   return statistics;
 }

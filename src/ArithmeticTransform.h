@@ -9,6 +9,7 @@ enum class ArithmeticIdentity { XorCarry, DoubleOrMinusXor };
 
 // Replaces an eligible integer addition. The instruction becomes invalid after the call.
 void rewriteArithmetic(llvm::BinaryOperator &instruction, ArithmeticIdentity identity);
+void rewriteSubtraction(llvm::BinaryOperator &instruction);
 
 } // namespace irveil
 

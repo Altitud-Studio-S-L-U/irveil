@@ -508,6 +508,9 @@ right:
                 "SETUP", "  call void @restricted()").replace("LEFT", ""),
             template.replace("SETUP", "").replace("LEFT", "").replace(
                 "  br i1 %c, label %left, label %right", "  br label %left"),
+            template.replace("SETUP", "").replace("LEFT", "").replace(
+                "  br i1 %c, label %left, label %right", "  br label %left").replace(
+                "  ret i32 1", "  br i1 %c, label %right, label %right"),
             '''define i32 @f(i1 %c, i32 %n) {
 entry:
   br i1 %c, label %left, label %right
@@ -527,6 +530,112 @@ exit:
                 source = annotations(["f"]) + body
                 self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
                     self.transform(source, "irveil<transforms=flatten>")))
+
+    def test_flatten_requires_explicit_switch_lowering_for_input_switches(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i32 %c, i32 %a) {
+entry:
+  switch i32 %c, label %other [ i32 0, label %zero
+                               i32 1, label %one ]
+zero:
+  %z = add i32 %a, 1
+  ret i32 %z
+one:
+  %o = sub i32 %a, 1
+  ret i32 %o
+other:
+  ret i32 %a
+}
+define i32 @main() {
+  %a = call i32 @f(i32 0, i32 19)
+  %b = call i32 @f(i32 1, i32 19)
+  %c = call i32 @f(i32 -1, i32 19)
+  %ab = add i32 %a, %b
+  %sum = add i32 %ab, %c
+  %bad = icmp ne i32 %sum, 57
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+            self.transform(source, "irveil<transforms=flatten>")))
+        output = self.transform(source, "irveil<transforms=switch+flatten>")
+        self.assertIn('"irveil.flattened"', output)
+        self.assertIn("irveil.flatten.dispatch", output)
+        path = self.work / "flatten-switch.ll"
+        path.write_text(output)
+        self.checked([self.llvm / "lli", path])
+
+    def test_flatten_native_modes_memory_recursion_and_reoptimization(self):
+        fixture = FIXTURES / "flatten-corpus.cpp"
+        expected = None
+        for optimization in ["-O0", "-O1", "-O2", "-O3"]:
+            for enabled in [False, True]:
+                with self.subTest(optimization=optimization, enabled=enabled):
+                    binary = self.work / "flatten-native"
+                    plugin = (["-Xclang", "-load", "-Xclang", self.plugin,
+                               f"-fpass-plugin={self.plugin}", "-mllvm", "-irveil-transforms=flatten",
+                               "-mllvm", "-irveil-report"] if enabled else [])
+                    self.checked([self.llvm / "clang++", "-std=c++17", optimization, "-g",
+                                  "-I", self.include, *plugin, fixture, "-o", binary])
+                    actual = self.checked([binary]).stdout
+                    self.assertEqual(len(actual.splitlines()), 633)
+                    if expected is None: expected = actual
+                    self.assertEqual(actual, expected)
+                    if enabled and optimization in ["-O2", "-O3"]:
+                        ir = self.work / "flatten-native.ll"
+                        emitted = self.checked([self.llvm / "clang++", "-std=c++17", optimization,
+                            "-g", "-I", self.include, *plugin, "-S", "-emit-llvm", fixture, "-o", ir])
+                        self.assertRegex(emitted.stderr, r"flattened=[1-9]")
+                        # Clang normally discards SSA/block names. Check the
+                        # transformed control structure, rather than debug names.
+                        self.assertTrue('"irveil.flattened"' in ir.read_text())
+                        self.assertRegex(function_body(ir.read_text(), "re_flat_branch32"), r"\bswitch i32 %")
+                        optimized = self.work / "flatten-reoptimized.ll"
+                        self.checked([self.llvm / "opt", f"-passes=default<{optimization[1:]}>" ,
+                                      "-verify-each", "-S", ir, "-o", optimized])
+                        self.checked([self.llvm / "clang++", optimization, optimized, "-o", binary])
+                        self.assertEqual(self.checked([binary]).stdout, expected)
+
+    def test_flatten_sanitizers_and_concurrent_atomic_calls(self):
+        expected = None
+        for enabled in [False, True]:
+            binary = self.work / "flatten-sanitized"
+            plugin = (["-Xclang", "-load", "-Xclang", self.plugin, f"-fpass-plugin={self.plugin}",
+                "-mllvm", "-irveil-transforms=flatten", "-mllvm", "-irveil-max-flatten-blocks=64",
+                "-mllvm", "-irveil-max-flatten-instructions=4096", "-mllvm", "-irveil-report"] if enabled else [])
+            built = self.checked([self.llvm / "clang++", "-std=c++17", "-O1", "-I", self.include,
+                "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
+                *plugin, FIXTURES / "flatten-corpus.cpp", "-o", binary])
+            actual = self.checked([binary]).stdout
+            if expected is None: expected = actual
+            self.assertEqual(actual, expected)
+            if enabled: self.assertRegex(built.stderr, r"flattened=[1-9]")
+        source = self.work / "flatten-threads.cpp"
+        source.write_text('''
+#include <irveil/Protect.h>
+#include <atomic>
+#include <thread>
+extern "C" IRVEIL_PROTECT unsigned step(unsigned i, std::atomic<unsigned> *p) {
+  auto old = p->fetch_add(1, std::memory_order_relaxed);
+  if (i & 1) { p->fetch_add(1, std::memory_order_relaxed); p->fetch_add(1, std::memory_order_relaxed); }
+  return old;
+}
+int main() {
+  std::atomic<unsigned> counter{0};
+  std::thread workers[4];
+  for (auto &worker : workers)
+    worker = std::thread([&] { for (unsigned i = 0; i < 10000; ++i) step(i, &counter); });
+  for (auto &worker : workers) worker.join();
+  return counter.load() != 80000;
+}
+''')
+        binary = self.work / "flatten-threads"
+        built = self.checked([self.llvm / "clang++", "-std=c++17", "-O2", "-pthread", "-I", self.include,
+            "-Xclang", "-load", "-Xclang", self.plugin, f"-fpass-plugin={self.plugin}",
+            "-mllvm", "-irveil-transforms=flatten", "-mllvm", "-irveil-report", source, "-o", binary])
+        self.assertIn("flattened=1", built.stderr)
+        self.checked([binary])
 
     def test_cfg_excludes_personality_and_restricted_calls(self):
         for restriction in ["convergent", "noduplicate", "returns_twice", "personality"]:

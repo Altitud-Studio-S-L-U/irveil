@@ -7,6 +7,7 @@
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/NoFolder.h"
@@ -26,23 +27,19 @@ bool spillable(llvm::Type *type) {
 }
 
 bool restrictedCall(const llvm::CallBase &call) {
-  if (call.getCallingConv() != llvm::CallingConv::C || call.isInlineAsm() ||
+  const auto *callee = call.getCalledFunction();
+  if (!callee || call.getCallingConv() != llvm::CallingConv::C || call.hasOperandBundles() ||
       call.isConvergent() || call.cannotDuplicate() ||
       call.hasFnAttr(llvm::Attribute::ReturnsTwice)) return true;
   if (auto *ordinary = llvm::dyn_cast<llvm::CallInst>(&call))
     if (ordinary->isMustTailCall()) return true;
-  if (auto *callee = call.getCalledFunction()) {
-    const auto name = callee->getName();
-    if (name.starts_with("llvm.coro.") || name.starts_with("llvm.gc") ||
-        name.starts_with("llvm.experimental.") || name.starts_with("llvm.eh.") ||
-        name.starts_with("llvm.stacksave") || name.starts_with("llvm.stackrestore") ||
-        name.starts_with("llvm.localescape") || name.starts_with("llvm.localrecover") ||
-        name.starts_with("llvm.call.preallocated") || name.starts_with("llvm.va_") ||
-        name.starts_with("llvm.frameaddress") || name.starts_with("llvm.returnaddress") ||
-        name.starts_with("llvm.addressofreturnaddress") || name.starts_with("llvm.read_register") ||
-        name.starts_with("llvm.write_register") || name.starts_with("llvm.get.dynamic.area.offset")) return true;
-  } else return true; // Unknown callees may have control/stack requirements.
-  return false;
+  if (!callee->isIntrinsic()) return false;
+  // Spilling an equivalent pointer can violate an intrinsic's requirement
+  // that its operand statically resolve to a specific alloca or function.
+  if (const auto *lifetime = llvm::dyn_cast<llvm::LifetimeIntrinsic>(&call))
+    return !llvm::isa<llvm::AllocaInst>(lifetime->getArgOperand(1));
+  return !llvm::isa<llvm::DbgInfoIntrinsic, llvm::MemIntrinsic, llvm::MinMaxIntrinsic,
+                    llvm::WithOverflowInst, llvm::SaturatingInst>(&call);
 }
 
 std::uint64_t instructionCount(const llvm::Function &function) {
@@ -59,7 +56,8 @@ bool flattenControlFlow(llvm::Function &function, const Config &config,
   const auto overBudget = [&]() { ++statistics.flattenSkippedBudget; return false; };
   auto &entry = function.getEntryBlock();
   if (function.hasPersonalityFn() || function.hasGC() || function.isVarArg() ||
-      function.hasFnAttribute("presplitcoroutine") || function.hasFnAttribute(llvm::Attribute::Naked) ||
+      function.isPresplitCoroutine() || function.hasFnAttribute("presplitcoroutine") ||
+      function.hasFnAttribute(llvm::Attribute::Naked) ||
       function.hasFnAttribute(llvm::Attribute::ReturnsTwice) ||
       function.getCallingConv() != llvm::CallingConv::C ||
       function.getParent()->getDataLayout().getAllocaAddrSpace() != 0 ||

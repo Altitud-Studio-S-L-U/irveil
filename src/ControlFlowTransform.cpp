@@ -10,7 +10,8 @@
 namespace irveil {
 namespace {
 bool supported(const llvm::Function &function) {
-  if (function.hasPersonalityFn() || function.hasFnAttribute("presplitcoroutine")) return false;
+  if (function.hasPersonalityFn() || function.isPresplitCoroutine() ||
+      function.hasFnAttribute("presplitcoroutine")) return false;
   for (const auto &block : function) {
     if (block.isEHPad() || block.hasAddressTaken()) return false;
     const auto *term = block.getTerminator();

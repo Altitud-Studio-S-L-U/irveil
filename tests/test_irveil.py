@@ -535,6 +535,46 @@ exit:
                 self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
                     self.transform(source, "irveil<transforms=flatten>")))
 
+    def test_flatten_preserves_intrinsic_operand_origins(self):
+        for declaration, origin, call in [
+            ("declare void @llvm.stackprotector(ptr, ptr)", "%slot",
+             "call void @llvm.stackprotector(ptr %arg, ptr %derived)"),
+            ("declare void @llvm.init.trampoline(ptr, ptr, ptr)\ndeclare void @nested(ptr nest)", "@nested",
+             "call void @llvm.init.trampoline(ptr %arg, ptr %derived, ptr %slot)"),
+        ]:
+            with self.subTest(intrinsic=declaration):
+                source = annotations(["f"]) + declaration + f'''
+define void @f(ptr %arg) {{
+entry:
+  %slot = alloca ptr
+  br label %derive
+derive:
+  %derived = getelementptr i8, ptr {origin}, i64 0
+  br label %use
+use:
+  {call}
+  ret void
+}}
+'''
+                self.assertEqual(canonical_ir(self.transform(source, "verify")),
+                                 canonical_ir(self.transform(source, "irveil<transforms=flatten>")))
+
+    def test_structural_passes_skip_llvm_presplit_coroutines(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i1 %c) presplitcoroutine {
+entry:
+  br i1 %c, label %left, label %right
+left:
+  ret i32 1
+right:
+  ret i32 0
+}
+'''
+        original = canonical_ir(self.transform(source, "verify"))
+        for family in ["cfg", "flatten"]:
+            with self.subTest(family=family):
+                self.assertEqual(original, canonical_ir(self.transform(source, f"irveil<transforms={family}>")))
+
     def test_flatten_requires_explicit_switch_lowering_for_input_switches(self):
         source = annotations(["f"]) + '''
 define i32 @f(i32 %c, i32 %a) {

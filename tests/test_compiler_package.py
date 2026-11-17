@@ -134,6 +134,11 @@ class CompilerPackageTests(unittest.TestCase):
             ("MAX_ADDS", "requires a value"), ("UNKNOWN 4", "unknown argument"),
             ("SEED 1 SEED 2", "more than once"), ("REPORT REPORT", "more than once"),
             ("SEED 0x10", "decimal"), ("MAX_ADDS 1.5", "decimal"),
+            ("PROFILE universal", "PROFILE"), ("PROFILE", "requires a value"),
+            ("TRANSFORMS adds+adds", "TRANSFORMS"), ("TRANSFORMS adds+", "TRANSFORMS"),
+            ("TRANSFORMS unknown", "TRANSFORMS"), ("MAX_EDGES 257", "256"),
+            ("MAX_SWITCH_CASES 0", "between 1"), ("MAX_CONSTANTS 4097", "4096"),
+            ("MAX_STRING_BYTES 65537", "65536"),
         ]
         preamble = ("cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
                     "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\n"
@@ -172,6 +177,25 @@ class CompilerPackageTests(unittest.TestCase):
         self.require_configured(self.configure(source, build))
         result = self.checked([self.cmake, "--build", build, "--parallel", "2"])
         self.assertIn("seed=18446744073709551615 max-adds=4096", result.stdout + result.stderr)
+        self.checked([build / "app"])
+
+    def test_modular_profile_and_family_limits_in_installed_helper(self):
+        source = self.work / "modular source"
+        source.mkdir()
+        (source / "main.cpp").write_text(
+            '#include <irveil/Protect.h>\n'
+            'IRVEIL_PROTECT unsigned f(unsigned a) { return a - 17; }\n'
+            'int main() { return f(20) != 3; }\n')
+        (source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
+            "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\nadd_executable(app main.cpp)\n"
+            "irveil_protect_target(app PROFILE general TRANSFORMS sub+constants "
+            "MAX_EDGES 1 MAX_SWITCH_CASES 2 MAX_CONSTANTS 3 MAX_STRING_BYTES 4 REPORT)\n")
+        build = self.work / "modular build"
+        self.require_configured(self.configure(source, build, "-DCMAKE_BUILD_TYPE=Release"))
+        result = self.checked([self.cmake, "--build", build, "--parallel", "2"])
+        self.assertIn("transforms=258", result.stdout + result.stderr)
+        self.assertRegex(result.stdout + result.stderr, r"constants=[1-9]")
         self.checked([build / "app"])
 
 

@@ -57,7 +57,7 @@ def annotations(names):
     )
 
 
-def exhaustive_module():
+def exhaustive_module(opcode="add", predicate=None):
     """Compare every small bit-vector pair to LLVM add, outside selected code."""
     pieces = ['source_filename = "exhaustive.ll"\n',
               'target triple = "x86_64-pc-linux-gnu"\n',
@@ -105,7 +105,20 @@ passed:
     for width in range(4, 9):
         pieces.append(f"  %combined{width} = or i32 %combined{width - 1}, %r{width}\n")
     pieces.append("  ret i32 %combined8\n}\n")
-    return "".join(pieces)
+    source = "".join(pieces)
+    if opcode != "add" or predicate:
+        for width in range(2, 9):
+            operation = f"icmp {predicate}" if predicate else opcode
+            result_type = "i1" if predicate else f"i{width}"
+            source = source.replace(f"define i{width} @small{width}", f"define {result_type} @small{width}")
+            source = source.replace(f"%sum = add i{width} %a, %b", f"%sum = {operation} i{width} %a, %b")
+            source = source.replace(f"ret i{width} %sum", f"ret {result_type} %sum")
+            source = source.replace(f"call i{width} @small{width}", f"call {result_type} @small{width}")
+            source = source.replace(f"%expected = trunc i16 %wide_expected to i{width}",
+                                    f"%expected = {operation} i{width} %small_a, %small_b")
+            source = source.replace(f"%equal = icmp eq i{width} %actual, %expected",
+                                    f"%equal = icmp eq {result_type} %actual, %expected")
+    return source
 
 
 class IRVeilTests(unittest.TestCase):
@@ -331,6 +344,96 @@ define i32 @main() {
         self.assertEqual(len(re.findall(r"^irveil\.(?:cfg|loop)\.edge\d*:", capped, re.MULTILINE)), 1)
         skipped = self.transform(source, "irveil<transforms=switch;max-switch-cases=2>")
         self.assertIn("switch i32", function_body(skipped, "f"))
+
+    def test_loop_metadata_follows_the_new_backedge(self):
+        source = annotations(["f"]) + '''
+define void @f(i1 %again) {
+entry:
+  br label %loop
+loop:
+  br i1 %again, label %loop, label %exit, !llvm.loop !0
+exit:
+  ret void
+}
+!0 = distinct !{!0, !1}
+!1 = !{!"llvm.loop.unroll.disable"}
+'''
+        output = self.transform(source, "irveil<transforms=loops>")
+        self.assertRegex(output, r"irveil.loop.edge:[^\n]*\n\s+br label %loop, !llvm.loop")
+        self.assertNotRegex(output, r"br i1[^\n]*!llvm.loop")
+
+    def test_exhaustive_general_integer_operations_and_all_predicates(self):
+        operations = [(op, None) for op in ["sub", "and", "or", "xor"]]
+        operations += [("icmp", p) for p in ["eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge"]]
+        for opcode, predicate in operations:
+            for seed in [0, 42]:
+                with self.subTest(opcode=opcode, predicate=predicate, seed=seed):
+                    source = exhaustive_module(opcode, predicate)
+                    output = self.transform(source, f"irveil<profile=general;seed={seed}>")
+                    path = self.work / "general-exhaustive.ll"
+                    path.write_text(output)
+                    self.checked([self.llvm / "lli", path])
+
+    def test_framework_corpus_native_and_optimized_semantics(self):
+        fixture = FIXTURES / "framework-corpus.cpp"
+        source = self.work / "framework.ll"
+        self.checked([self.llvm / "clang++", "-std=c++17", "-O0", "-Xclang", "-disable-O0-optnone",
+                      "-I", self.include, "-S", "-emit-llvm", fixture, "-o", source])
+        original = source.read_text()
+        baseline = self.work / "framework-plain"
+        self.checked([self.llvm / "clang++", "-O0", source, "-o", baseline])
+        expected = self.checked([baseline]).stdout
+        self.assertEqual(len(expected.splitlines()), 633)
+        for families in ["cfg", "loops", "switch", "constants", "strings",
+                         "adds+sub+bitwise+cmp+branches+cfg+loops+switch+constants+strings"]:
+            for seed in [0, 42]:
+                with self.subTest(families=families, seed=seed):
+                    transformed = self.transform(original, f"irveil<transforms={families};seed={seed}>")
+                    source.write_text(transformed)
+                    for optimization in ["-O0", "-O2"]:
+                        binary = self.work / "framework-transformed"
+                        self.checked([self.llvm / "clang++", optimization, source, "-o", binary])
+                        self.assertEqual(self.checked([binary]).stdout, expected)
+
+    def test_framework_sanitizers_and_concurrent_string_reads(self):
+        flags = ["-std=c++17", "-O1", "-I", self.include, "-fsanitize=address,undefined",
+                 "-fno-omit-frame-pointer", "-fno-sanitize-recover=all"]
+        source = FIXTURES / "framework-corpus.cpp"
+        expected = None
+        families = "adds+sub+bitwise+cmp+branches+cfg+loops+switch+constants+strings"
+        for enabled in [False, True]:
+            binary = self.work / f"framework-sanitized-{enabled}"
+            plugin = (["-Xclang", "-load", "-Xclang", self.plugin,
+                       f"-fpass-plugin={self.plugin}", "-mllvm", "-irveil-transforms=" + families]
+                      if enabled else [])
+            self.checked([self.llvm / "clang++", *flags, *plugin, source, "-o", binary])
+            actual = self.checked([binary]).stdout
+            if expected is None: expected = actual
+            else: self.assertEqual(actual, expected)
+        concurrent = self.work / "concurrent.cpp"
+        concurrent.write_text('''
+#include <irveil/Protect.h>
+#include <thread>
+IRVEIL_PROTECT unsigned byte(unsigned i) { return "parallel"[i % 9]; }
+int main() {
+  unsigned results[4] = {};
+  std::thread workers[4];
+  for (unsigned t = 0; t < 4; ++t)
+    workers[t] = std::thread([&,t] { for (unsigned i = 0; i < 10000; ++i) results[t] += byte(i); });
+  unsigned expected = 0;
+  constexpr unsigned reference[] = {112, 97, 114, 97, 108, 108, 101, 108, 0};
+  for (unsigned i = 0; i < 10000; ++i) expected += reference[i % 9];
+  for (auto &worker : workers) worker.join();
+  for (auto value : results) if (value != expected) return 1;
+}
+''')
+        binary = self.work / "concurrent"
+        built = self.checked([self.llvm / "clang++", "-std=c++17", "-O2", "-pthread",
+            "-I", self.include, "-Xclang", "-load", "-Xclang", self.plugin,
+            f"-fpass-plugin={self.plugin}", "-mllvm", "-irveil-transforms=strings",
+            "-mllvm", "-irveil-report", concurrent, "-o", binary])
+        self.assertIn("strings=1", built.stderr)
+        self.checked([binary])
 
     def test_cfg_skips_eh_and_address_taken_functions(self):
         source = annotations(["f"]) + '''

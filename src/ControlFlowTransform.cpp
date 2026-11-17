@@ -92,6 +92,11 @@ bool rewriteControlFlow(llvm::Function &function, const Config &config,
         edge.backedge ? "irveil.loop.edge" : "irveil.cfg.edge", &function, target);
     auto *jump = llvm::BranchInst::Create(target, route);
     jump->setDebugLoc(edge.branch->getDebugLoc());
+    if (edge.backedge) {
+      jump->setMetadata(llvm::LLVMContext::MD_loop,
+                        edge.branch->getMetadata(llvm::LLVMContext::MD_loop));
+      edge.branch->setMetadata(llvm::LLVMContext::MD_loop, nullptr);
+    }
     edge.branch->setSuccessor(edge.index, route);
     for (auto &phi : target->phis()) phi.replaceIncomingBlockWith(from, route);
     if (edge.backedge) ++statistics.routedLoopEdges;

@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "ControlFlowTransform.h"
 #include "DataTransform.h"
+#include "FlattenTransform.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -135,7 +136,9 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     }
 
     const bool controlChanged = rewriteControlFlow(*function, config, statistics);
-    if (!candidates.empty() || controlChanged || constantsChanged) {
+    const bool flattened = flattenControlFlow(*function, config,
+        functionSeed(function->getName(), config.seed), statistics);
+    if (!candidates.empty() || controlChanged || constantsChanged || flattened) {
       function->addFnAttr(ProcessedAttribute);
     }
   }
@@ -173,7 +176,15 @@ llvm::PreservedAnalyses IRVeilPass::run(
                  << " max-switch-cases=" << config_.maxSwitchCasesPerFunction
                  << " max-constants=" << config_.maxConstantsPerFunction
                  << " max-string-bytes=" << config_.maxStringBytesPerModule
-                 << " max-string-loads=" << config_.maxStringLoadsPerModule << '\n';
+                 << " max-string-loads=" << config_.maxStringLoadsPerModule
+                 << " flattened=" << result->flattenedFunctions
+                 << " flatten-blocks=" << result->flattenedBlocks
+                 << " flatten-spills=" << result->flattenSpillSlots
+                 << " flatten-added=" << result->flattenAddedInstructions
+                 << " flatten-skipped-unsupported=" << result->flattenSkippedUnsupported
+                 << " flatten-skipped-budget=" << result->flattenSkippedBudget
+                 << " max-flatten-blocks=" << config_.maxFlattenBlocksPerFunction
+                 << " max-flatten-instructions=" << config_.maxFlattenInstructionsPerFunction << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

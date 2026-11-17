@@ -405,6 +405,129 @@ define i32 @main() {
                 self.assertEqual(canonical_ir(self.transform(output, "verify")),
                                  canonical_ir(self.transform(output, pipeline)))
 
+    def test_flatten_is_opt_in_bounded_deterministic_and_idempotent(self):
+        source = self.fixture("flatten.ll")
+        original = canonical_ir(self.transform(source, "verify"))
+        # The default still rewrites arithmetic; it must not enable flattening.
+        self.assertNotIn("irveil.flatten", function_body(self.transform(source), "flat"))
+        for options in ["max-flatten-blocks=1", "max-flatten-instructions=1"]:
+            self.assertEqual(original, canonical_ir(self.transform(
+                source, f"irveil<transforms=flatten;{options}>")))
+        outputs = []
+        for seed in [0, 42, 18446744073709551615]:
+            pipeline = f"irveil<transforms=flatten;seed={seed}>"
+            output = self.transform(source, pipeline)
+            body = function_body(output, "flat")
+            self.assertIn("irveil.flatten.dispatch", body)
+            self.assertIn("switch i32 %irveil.flatten.state", body)
+            self.assertIn('"irveil.flattened"', output)
+            self.assertNotIn("phi i32 [ %a,", body)
+            self.assertNotRegex(body, r"\b(?:load|store) volatile\b")
+            self.assertEqual(canonical_ir(output), canonical_ir(self.transform(source, pipeline)))
+            self.assertEqual(canonical_ir(self.transform(output, "verify")),
+                             canonical_ir(self.transform(output, pipeline)))
+            outputs.append(output)
+        self.assertEqual(len(set(outputs)), 3)
+        count = lambda body: sum(bool(re.match(r"^  (?:%[-.\w]+ = )?[a-z]+(?: |$)", line))
+                                 for line in body.splitlines())
+        before = count(function_body(original, "flat"))
+        for cap in [1, 8, 16, 32, 64, 128, 256, 4096]:
+            output = self.transform(source, f"irveil<transforms=flatten;max-flatten-instructions={cap}>")
+            self.assertLessEqual(count(function_body(output, "flat")) - before, cap)
+            if '"irveil.flattened"' not in output:
+                self.assertEqual(original, canonical_ir(output))
+        for option in ["max-flatten-blocks=0", "max-flatten-blocks=65",
+                       "max-flatten-instructions=0", "max-flatten-instructions=4097",
+                       "transforms=flatten+flatten"]:
+            result = execute([self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                              f"-passes=irveil<{option}>", "-disable-output", "-"], input_text=source)
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_flatten_parallel_phis_critical_edges_and_reoptimization(self):
+        source = self.fixture("flatten.ll")
+        reference = source[source.index("define i32 @flat"):].replace("@flat(", "@reference(")
+        source += reference + '''
+define i32 @main() {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %ok ]
+  %n = urem i32 %i, 9
+  %a = mul i32 %i, 16777619
+  %b = xor i32 %a, -2147483648
+  %expected = call i32 @reference(i32 %n, i32 %a, i32 %b)
+  %actual = call i32 @flat(i32 %n, i32 %a, i32 %b)
+  %equal = icmp eq i32 %actual, %expected
+  br i1 %equal, label %ok, label %bad
+ok:
+  %next = add i32 %i, 1
+  %more = icmp ult i32 %next, 4096
+  br i1 %more, label %loop, label %done
+done:
+  ret i32 0
+bad:
+  ret i32 1
+}
+'''
+        for seed in [0, 42]:
+            for pipeline in [f"irveil<transforms=flatten;seed={seed}>",
+                             f"irveil<transforms=adds+sub+bitwise+cmp+branches+cfg+loops+constants+flatten;seed={seed};max-flatten-blocks=64;max-flatten-instructions=4096>"]:
+                for optimize in ["", ",default<O2>", ",default<O3>"]:
+                    with self.subTest(seed=seed, pipeline=pipeline, optimize=optimize):
+                        output = self.transform(source, pipeline + optimize)
+                        self.assertIn('"irveil.flattened"', output)
+                        path = self.work / "flatten-phi-check.ll"
+                        path.write_text(output)
+                        self.checked([self.llvm / "lli", path])
+
+    def test_flatten_exclusions_leave_the_entire_function_unchanged(self):
+        template = '''
+define i32 @f(i1 %c, i32 %n) {
+entry:
+SETUP
+  br i1 %c, label %left, label %right
+left:
+LEFT
+  ret i32 1
+right:
+  ret i32 2
+}
+'''
+        variants = [
+            template.replace("SETUP", "  %p = alloca i8, i32 %n").replace("LEFT", ""),
+            template.replace("SETUP", "").replace("LEFT", "  %p = alloca i32"),
+            template.replace("SETUP", "  %p = alloca inalloca i32").replace("LEFT", ""),
+            'declare ptr @llvm.stacksave.p0()\n' + template.replace(
+                "SETUP", "  %p = call ptr @llvm.stacksave.p0()").replace("LEFT", ""),
+            'declare i32 @callee(i1, i32)\n' + template.replace("SETUP", "").replace("LEFT", "").replace(
+                "  ret i32 2", "  %v = musttail call i32 @callee(i1 %c, i32 %n)\n  ret i32 %v"),
+            template.replace("i32 %n)", "i32 %n, ptr %fp)").replace(
+                "SETUP", "  %v = call i32 %fp()").replace("LEFT", ""),
+            template.replace("i32 %n)", "i32 %n, ...)").replace("SETUP", "").replace("LEFT", ""),
+            'declare void @restricted() convergent\n' + template.replace(
+                "SETUP", "  call void @restricted()").replace("LEFT", ""),
+            template.replace("SETUP", "").replace("LEFT", "").replace(
+                "  br i1 %c, label %left, label %right", "  br label %left"),
+            '''define i32 @f(i1 %c, i32 %n) {
+entry:
+  br i1 %c, label %left, label %right
+left:
+  br label %exit
+right:
+  br label %exit
+exit:
+  %v = phi i128 [ 0, %left ], [ 1, %right ]
+  %r = trunc i128 %v to i32
+  ret i32 %r
+}
+''',
+        ]
+        for index, body in enumerate(variants):
+            with self.subTest(index=index):
+                source = annotations(["f"]) + body
+                self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+                    self.transform(source, "irveil<transforms=flatten>")))
+
     def test_cfg_excludes_personality_and_restricted_calls(self):
         for restriction in ["convergent", "noduplicate", "returns_twice", "personality"]:
             with self.subTest(restriction=restriction):
@@ -867,7 +990,10 @@ define i32 @main() {
                 ("-irveil-max-adds=0", "1..4096"),
                 ("-irveil-max-adds=4097", "1..4096"),
                 ("-irveil-max-string-loads=0", "max-string-loads"),
-                ("-irveil-max-string-loads=65537", "max-string-loads")]:
+                ("-irveil-max-string-loads=65537", "max-string-loads"),
+                ("-irveil-max-flatten-blocks=0", "max-flatten-blocks"),
+                ("-irveil-max-flatten-blocks=65", "max-flatten-blocks"),
+                ("-irveil-max-flatten-instructions=4097", "max-flatten-instructions")]:
             with self.subTest(option=option):
                 result = execute([*command, "-mllvm", option])
                 self.assertNotEqual(result.returncode, 0)

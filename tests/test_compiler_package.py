@@ -140,6 +140,8 @@ class CompilerPackageTests(unittest.TestCase):
             ("MAX_SWITCH_CASES 0", "between 1"), ("MAX_CONSTANTS 4097", "4096"),
             ("MAX_STRING_BYTES 65537", "65536"),
             ("MAX_STRING_LOADS 0", "between 1"), ("MAX_STRING_LOADS 65537", "65536"),
+            ("MAX_FLATTEN_BLOCKS 0", "between 1"), ("MAX_FLATTEN_BLOCKS 65", "64"),
+            ("MAX_FLATTEN_INSTRUCTIONS 4097", "4096"),
         ]
         preamble = ("cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
                     "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\n"
@@ -209,11 +211,13 @@ class CompilerPackageTests(unittest.TestCase):
             "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\n"
             "add_executable(app main.cpp)\n")
         inherited = ("PROFILE", "TRANSFORMS", "MAX_EDGES", "MAX_SWITCH_CASES",
-                     "MAX_CONSTANTS", "MAX_STRING_BYTES", "MAX_STRING_LOADS")
+                     "MAX_CONSTANTS", "MAX_STRING_BYTES", "MAX_STRING_LOADS",
+                     "MAX_FLATTEN_BLOCKS", "MAX_FLATTEN_INSTRUCTIONS")
         (source / "CMakeLists.txt").write_text(preamble +
             "".join(f"set(seen_{option} TRUE)\n" for option in inherited) +
             "irveil_protect_target(app PROFILE general TRANSFORMS cfg+loops "
-            "MAX_EDGES 1 MAX_SWITCH_CASES 1 MAX_CONSTANTS 1 MAX_STRING_BYTES 1 MAX_STRING_LOADS 1)\n")
+            "MAX_EDGES 1 MAX_SWITCH_CASES 1 MAX_CONSTANTS 1 MAX_STRING_BYTES 1 MAX_STRING_LOADS 1 "
+            "MAX_FLATTEN_BLOCKS 16 MAX_FLATTEN_INSTRUCTIONS 256)\n")
         with self.subTest(inherited=True):
             self.require_configured(self.configure(source, self.work / "inherited parser build"))
         for index, text in enumerate(["adds;cfg", ";adds", "adds;", "adds+;cfg"]):
@@ -223,6 +227,30 @@ class CompilerPackageTests(unittest.TestCase):
                 rejected = self.configure(source, self.work / f"list separator-{index}")
                 self.assertNotEqual(rejected.returncode, 0)
                 self.assertIn("TRANSFORMS", rejected.stderr)
+
+    def test_flatten_installed_helper_and_preflight_skip(self):
+        source = self.work / "flatten source"
+        source.mkdir()
+        (source / "main.cpp").write_text('''
+#include <irveil/Protect.h>
+IRVEIL_PROTECT unsigned f(unsigned x, volatile unsigned *p) {
+  if (x & 1) { *p = x; *p += 1; } else *p = x + 2;
+  return *p;
+}
+int main() { unsigned cell = 0; return f(3, &cell) != 4 || f(2, &cell) != 4 || cell != 4; }
+''')
+        for cap in [1, 256]:
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
+                "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\nadd_executable(app main.cpp)\n"
+                f"irveil_protect_target(app TRANSFORMS flatten MAX_FLATTEN_BLOCKS 16 "
+                f"MAX_FLATTEN_INSTRUCTIONS {cap} REPORT)\n")
+            build = self.work / f"flatten build-{cap}"
+            self.require_configured(self.configure(source, build))
+            result = self.checked([self.cmake, "--build", build, "--parallel", "2"])
+            self.assertIn(f"max-flatten-instructions={cap}", result.stdout + result.stderr)
+            self.assertIn(f"flattened={int(cap > 1)}", result.stdout + result.stderr)
+            self.checked([build / "app"])
 
 
 if __name__ == "__main__":

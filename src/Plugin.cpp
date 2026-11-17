@@ -21,6 +21,8 @@ llvm::cl::opt<std::string> ClangMaxSwitchCases("irveil-max-switch-cases", llvm::
 llvm::cl::opt<std::string> ClangMaxConstants("irveil-max-constants", llvm::cl::init("32"));
 llvm::cl::opt<std::string> ClangMaxStringBytes("irveil-max-string-bytes", llvm::cl::init("4096"));
 llvm::cl::opt<std::string> ClangMaxStringLoads("irveil-max-string-loads", llvm::cl::init("4096"));
+llvm::cl::opt<std::string> ClangMaxFlattenBlocks("irveil-max-flatten-blocks", llvm::cl::init("16"));
+llvm::cl::opt<std::string> ClangMaxFlattenInstructions("irveil-max-flatten-instructions", llvm::cl::init("256"));
 llvm::cl::opt<bool> ClangReport("irveil-report", llvm::cl::init(false));
 
 bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
@@ -59,6 +61,8 @@ irveil::Config clangConfig() {
   parse("max-constants", ClangMaxConstants.getValue());
   parse("max-string-bytes", ClangMaxStringBytes.getValue());
   parse("max-string-loads", ClangMaxStringLoads.getValue());
+  parse("max-flatten-blocks", ClangMaxFlattenBlocks.getValue());
+  parse("max-flatten-instructions", ClangMaxFlattenInstructions.getValue());
   return config;
 }
 } // namespace

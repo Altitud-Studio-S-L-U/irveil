@@ -162,3 +162,70 @@ unoptimized and optimized compilation of transformed IR are compared to ordinary
 executables. Debug/Release builds and relocated installed C/C++ consumers remain
 required. Ghidra evaluation uses a separate corpus/protocol and records eliminated
 transforms as counterevidence, without replacing the historical v0.2 results.
+
+## Bounded flattening experiment
+
+`Flatten` is a separate opt-in bit, absent from Arithmetic/General defaults.
+Selection, validation-before-mutation and processed-function idempotence remain
+unchanged. It runs after other structural families, before string encoding; its
+own dispatcher is not recursively lowered. If an earlier selected family changes
+a function which flattening skips, that earlier work still receives the processed
+marker. Generate fresh input IR to change configuration.
+
+The entry executes once and keeps its SSA definitions/allocas. Every other block
+receives a unique i32 tag `(ordinal+1) XOR low32(functionSeed)`; the public seed is
+not a secret. Original branches become a constant/conditional-select next state
+followed by a branch to the dispatcher. A dispatcher PHI selects that state and
+a switch enters the corresponding original block. Returns/unreachable remain in
+their blocks; invalid states lead to a new unreachable block. For defined source
+executions, induction on original branches establishes the same block sequence,
+branch choices and observable operations. Original branch conditions are used
+once, not duplicated; source poison/undef branch conditions are already UB.
+
+Changing the predecessor graph breaks original SSA dominance. Follow LLVM 18's
+[reg2mem ordering](https://github.com/llvm/llvm-project/blob/llvmorg-18.1.3/llvm/lib/Transforms/Scalar/Reg2Mem.cpp):
+split critical edges, demote original escaping non-entry values (including
+escaping PHI results), then demote original PHIs. Entry definitions still dominate
+all cases. Caching a PHI's current result separately from its incoming slot is
+necessary for loop-carried values and parallel PHIs. The
+[LLVM utilities](https://github.com/llvm/llvm-project/blob/llvmorg-18.1.3/llvm/lib/Transforms/Utils/DemoteRegToStack.cpp)
+perform the spill/reload placement and PHI replacement. Added slots are private,
+static entry allocas; there are no added calls, globals, atomics or volatile
+operations. Existing memory operations retain their dynamic order. The pass does
+not strengthen the input's definedness guarantees or repair source UB.
+
+The first subset accepts only reachable branch/return/unreachable CFGs, at least
+two non-entry blocks and a branching entry, without duplicate branch successors.
+Input switches require explicit prior lowering. EH/personality, GC, blockaddress,
+presplit coroutines, varargs/non-C conventions, naked/returns_twice functions,
+dynamic/non-entry/inalloca allocas, preallocated/inalloca parameters,
+indirect/inline-asm/non-C/convergent/noduplicate/returns_twice
+calls, musttail and stack/frame/register/localescape/experimental/coroutine/GC/EH/varargs intrinsics are
+excluded. Spill types are scalar integers 1..64 or address-space-zero pointers;
+the alloca address space must be zero. Unsupported required spills reject the
+entire function. No new loop or branch-weight metadata is inferred for the new
+topology; original instruction debug locations are retained where possible.
+
+Preflight is read-only. Let B be original non-entry blocks, E critical edges,
+Q conditional branches, R original escaping non-entry register values, U their
+total original operand uses, P original PHIs and D their total incoming entries.
+The dispatched-block bound is `B+E`. The net instruction-growth bound is
+`3 + E + Q + 2*R + U + P + D`: dispatcher PHI/switch/unreachable, split branches,
+selects, register slots/stores/reloads, and PHI slots/loads/stores minus the
+removed PHIs. LLVM can share reloads or erase unused PHIs, so this is conservative.
+`maxFlattenBlocksPerFunction` defaults to 16 (1..64), and
+`maxFlattenInstructionsPerFunction` defaults to 256 (1..4096). Reject the complete
+flattening before mutation if either bound fails. At most E+2 blocks and R+P slots
+are added; report actual nonnegative net instruction growth and actual slots.
+The existing combined-family bound gains this independent flattening term. None
+of these IR bounds is a bound on native instructions, frame bytes or runtime.
+
+Acceptance requires verifier checks; parallel/loop-carried PHIs and critical-edge
+regressions; deterministic tags, repeated-pass behavior, exact skip preservation,
+limit/option rejection and installed API/compiler/CMake compatibility; native
+boundary/random executions and sanitizers before/after reoptimization. Evaluate
+normal versus flattened and reoptimized binaries at O2/O3, record IR work separately
+from actual dispatch survival, and inspect stripped Ghidra output with repeated
+normal controls. Measure compile/runtime and native cost on a fixed owned workload.
+Simplification or recovery is counterevidence, not a reason to relax semantics or
+add opaque anti-analysis mechanisms. Keep this opt-in regardless of one result.

@@ -136,6 +136,7 @@ opt-18 -load-pass-plugin ./build/IRVeilPass.so \
 | `switch` | Freeze the condition once, then emit an equality ladder with repaired PHIs, including repeated destinations; linear comparisons can cost more than a jump table |
 | `constants` | Split original integer literals into two XOR operands in arithmetic, integer comparisons and returns; one extra IR instruction per operand, readily constant-folded |
 | `strings` | XOR private constant C byte arrays and decode each ordinary scalar `i8` load; requires all uses to end in selected functions, with no escaping pointers, calls, aliases, wide/atomic/volatile loads or mutable storage |
+| `flatten` | Experimental whole-function SSA dispatcher for a restricted branch CFG; spills crossing registers/PHIs to private stack slots, with preflight block/instruction limits; additional memory traffic and dispatch overhead can be substantial |
 
 Use `transforms=none` to disable work. Unknown/repeated families and malformed or
 out-of-range options are rejected before mutation. `max-adds` (1..4096, default
@@ -163,14 +164,54 @@ irveil_protect_target(app TRANSFORMS cfg+loops+switch+constants+strings
   MAX_STRING_BYTES 1024 MAX_STRING_LOADS 256 REPORT)
 ```
 
-Structural rewrites skip functions with EH/personality, address-taken blocks,
-indirect control flow, presplit coroutines or restricted calls. This is local CFG
-diversification, not control-flow flattening or whole-program protection. String
+Local structural rewrites skip functions with EH/personality, address-taken blocks,
+indirect control flow, presplit coroutines or restricted calls. The `cfg`/`loops`
+families provide local CFG diversification. Flattening has its own subset below. String
 decoding preserves static lifetime without writable shared initialization, but
 keys and decoded bytes remain observable. Calls such as `puts`/`strlen` cause a
 string to be skipped. Counters report actual IR work, not final-binary survival.
 See the [experimental contract](docs/design.md#experimental-modular-framework)
 and [framework evaluation](docs/re-evaluation.md#experimental-framework-evaluation).
+
+### Bounded flattening experiment
+
+Enable only with `transforms=flatten` (or an explicit list containing it). Neither
+profile enables it by default. `max-flatten-blocks` caps dispatched blocks after
+critical-edge splitting (1..64, default 16); `max-flatten-instructions` caps a
+conservative upper bound on net IR instruction growth (1..4096, default 256).
+An unsupported or over-budget function is skipped before flattening mutates it.
+The equivalent Clang flags are `-irveil-max-flatten-blocks` and
+`-irveil-max-flatten-instructions`; CMake accepts `MAX_FLATTEN_BLOCKS` and
+`MAX_FLATTEN_INSTRUCTIONS`.
+
+```sh
+opt-18 -load-pass-plugin ./build/IRVeilPass.so \
+  '-passes=irveil<transforms=flatten;seed=42;max-flatten-blocks=16;max-flatten-instructions=256>' \
+  -verify-each -S input.ll -o output.ll
+```
+
+The initial subset has at least two non-entry blocks, a branching entry, only
+branch/return/unreachable terminators, no unreachable blocks or duplicate branch
+successors, and only scalar integers up to 64 bits or address-space-zero pointers
+requiring spills. Entry definitions keep their dominance; other escaping values
+and PHIs use LLVM 18's register-to-memory utilities. A state PHI and switch route
+the original blocks without reordering their observable operations. No globals,
+runtime calls or volatile accesses are added. Private spills are ordinary memory.
+
+EH, block addresses, GC, varargs/non-C calling conventions, naked functions,
+dynamic/non-entry/inalloca allocas, preallocated/inalloca parameters,
+indirect/inline-asm/non-C/restricted calls, `musttail`, stack/frame/register queries
+and manipulation and experimental/coroutine/EH/varargs intrinsics exclude the function. Input
+switches are skipped unless `switch` is explicitly enabled to lower them first.
+Flattening runs after the other structural families and never rewrites its own
+dispatcher in that run. Its budgets apply to that current CFG, independently of
+earlier families. Reports separate unsupported/budget skips and actual changes.
+Generated dispatch branches do not inherit obsolete loop/profile metadata.
+
+Reoptimization can promote spills or recover control flow. This experiment has
+no anti-optimization, anti-debug or universal-survival guarantee. The detailed
+[flattening contract](docs/design.md#bounded-flattening-experiment) defines the
+semantic argument, exclusions and exact preflight bound.
 
 ## Transformation contract
 

@@ -26,6 +26,7 @@ bool parseTransforms(llvm::StringRef text, std::uint32_t &mask) {
     else if (part.first == "switch") bit = Switches;
     else if (part.first == "constants") bit = Constants;
     else if (part.first == "strings") bit = Strings;
+    else if (part.first == "flatten") bit = Flatten;
     else return false;
     if (mask & bit) return false;
     mask |= bit;
@@ -52,7 +53,9 @@ llvm::Error validateConfig(const Config &config) {
       config.maxSwitchCasesPerFunction < 1 || config.maxSwitchCasesPerFunction > 256 ||
       config.maxConstantsPerFunction < 1 || config.maxConstantsPerFunction > 4096 ||
       config.maxStringBytesPerModule < 1 || config.maxStringBytesPerModule > 65536 ||
-      config.maxStringLoadsPerModule < 1 || config.maxStringLoadsPerModule > 65536)
+      config.maxStringLoadsPerModule < 1 || config.maxStringLoadsPerModule > 65536 ||
+      config.maxFlattenBlocksPerFunction < 1 || config.maxFlattenBlocksPerFunction > 64 ||
+      config.maxFlattenInstructionsPerFunction < 1 || config.maxFlattenInstructionsPerFunction > 4096)
     return llvm::createStringError(std::errc::invalid_argument, "IRVeil invalid structural or data expansion limit");
   return llvm::Error::success();
 }
@@ -80,6 +83,8 @@ bool parseConfigOption(llvm::StringRef key, llvm::StringRef text, Config &config
   else if (key == "max-constants") destination = &config.maxConstantsPerFunction;
   else if (key == "max-string-bytes") { destination = &config.maxStringBytesPerModule; maximum = 65536; }
   else if (key == "max-string-loads") { destination = &config.maxStringLoadsPerModule; maximum = 65536; }
+  else if (key == "max-flatten-blocks") { destination = &config.maxFlattenBlocksPerFunction; maximum = 64; }
+  else if (key == "max-flatten-instructions") destination = &config.maxFlattenInstructionsPerFunction;
   if (!destination || value < 1 || value > maximum) return false;
   *destination = static_cast<std::uint32_t>(value);
   return true;

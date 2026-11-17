@@ -15,9 +15,9 @@ enum Transform : std::uint32_t {
   Adds = 1u << 0, Subtracts = 1u << 1, Bitwise = 1u << 2,
   Comparisons = 1u << 3, Branches = 1u << 4, CFG = 1u << 5,
   Loops = 1u << 6, Switches = 1u << 7, Constants = 1u << 8,
-  Strings = 1u << 9
+  Strings = 1u << 9, Flatten = 1u << 10
 };
-constexpr std::uint32_t AllTransforms = (1u << 10) - 1;
+constexpr std::uint32_t AllTransforms = (1u << 11) - 1;
 
 struct Config {
   std::uint64_t seed = 0;
@@ -32,6 +32,8 @@ struct Config {
   std::uint32_t maxConstantsPerFunction = 32;
   std::uint32_t maxStringBytesPerModule = 4096;
   std::uint32_t maxStringLoadsPerModule = 4096;
+  std::uint32_t maxFlattenBlocksPerFunction = 16;
+  std::uint32_t maxFlattenInstructionsPerFunction = 256;
 };
 
 struct Statistics {
@@ -50,6 +52,12 @@ struct Statistics {
   std::uint64_t encodedStrings = 0;
   std::uint64_t encodedStringBytes = 0;
   std::uint64_t decodedStringLoads = 0;
+  std::uint64_t flattenedFunctions = 0;
+  std::uint64_t flattenedBlocks = 0;
+  std::uint64_t flattenSpillSlots = 0;
+  std::uint64_t flattenAddedInstructions = 0;
+  std::uint64_t flattenSkippedUnsupported = 0;
+  std::uint64_t flattenSkippedBudget = 0;
 };
 
 // Selects functions carrying Clang's annotate("irveil") in llvm.global.annotations.

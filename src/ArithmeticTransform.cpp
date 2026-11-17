@@ -28,7 +28,7 @@ llvm::Value *emitDoubleOrMinusXor(llvm::IRBuilder<llvm::NoFolder> &builder,
 
 } // namespace
 
-void rewriteArithmetic(llvm::BinaryOperator &add, AddIdentity identity) {
+void rewriteArithmetic(llvm::BinaryOperator &add, ArithmeticIdentity identity) {
   // NoFolder keeps constant operands from collapsing the intended IR structure.
   // Fresh instructions deliberately inherit no nsw, nuw, exact or other flags.
   llvm::IRBuilder<llvm::NoFolder> builder(&add);
@@ -38,7 +38,7 @@ void rewriteArithmetic(llvm::BinaryOperator &add, AddIdentity identity) {
   // so every generated use observes the same choice for an undef/poison value.
   llvm::Value *left = builder.CreateFreeze(add.getOperand(0), "irveil.left");
   llvm::Value *right = builder.CreateFreeze(add.getOperand(1), "irveil.right");
-  llvm::Value *replacement = identity == AddIdentity::XorCarry
+  llvm::Value *replacement = identity == ArithmeticIdentity::XorCarry
                                  ? emitXorCarry(builder, left, right)
                                  : emitDoubleOrMinusXor(builder, left, right);
 

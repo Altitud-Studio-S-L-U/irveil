@@ -174,6 +174,73 @@ class IRVeilTests(unittest.TestCase):
                          len(re.findall(r"^@", source, re.MULTILINE)))
         self.assertRegex(transformed, r"declare i32 @external\(")
 
+    def test_opt_in_general_profile_semantics_and_structure(self):
+        # General is opt-in. Cover arithmetic, boolean logic, comparisons and
+        # conditional branches, including a PHI that depends on predecessor edges.
+        source = ('source_filename = "general.ll"\\n'
+                  'target triple = "x86_64-pc-linux-gnu"\\n'
+                  + annotations(["general"]) + """
+define i32 @general(i32 %a, i32 %b) {
+entry:
+  %sum = add i32 %a, %b
+  %difference = sub i32 %sum, %b
+  %mask = and i32 %a, %b
+  %either = or i32 %a, %b
+  %different = xor i32 %a, %b
+  %cmp = icmp ult i32 %a, %b
+  br i1 %cmp, label %yes, label %no
+yes:
+  %left = add i32 %difference, %mask
+  br label %exit
+no:
+  %right = sub i32 %either, %different
+  br label %exit
+exit:
+  %value = phi i32 [ %left, %yes ], [ %right, %no ]
+  ret i32 %value
+}
+define i32 @main() {
+entry:
+  %first = call i32 @general(i32 19, i32 3)
+  %second = call i32 @general(i32 3, i32 19)
+  %total = add i32 %first, %second
+  %ok = icmp eq i32 %total, 9
+  %bad = xor i1 %ok, true
+  %exit = zext i1 %bad to i32
+  ret i32 %exit
+}
+""")
+        # The default arithmetic-only profile must leave the branch and its
+        # original comparison unchanged.
+        default = function_body(self.transform(source), "general")
+        self.assertIn("icmp ult i32 %a, %b", default)
+        self.assertIn("sub i32", default)
+        for seed in [0, 1, 42]:
+            with self.subTest(seed=seed):
+                output = self.transform(source, f"irveil<profile=general;seed={seed}>")
+                body = function_body(output, "general")
+                self.assertIn("irveil.cmp.inverted", body)
+                self.assertIn("irveil.branch.condition", body)
+                self.assertIn("irveil.sub.not", body)
+                self.assertIn("irveil.bool.", body)
+                self.assertIn("phi i32", body)
+                path = self.work / f"general-{seed}.ll"
+                path.write_text(output, encoding="utf-8")
+                self.checked([self.llvm / "lli", path])
+
+    def test_general_profile_invalid_options_and_cap(self):
+        source = self.fixture("selection.ll")
+        for option in ["profile=", "profile=other", "profile=general;profile=general"]:
+            with self.subTest(option=option):
+                result = execute([
+                    self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                    f"-passes=irveil<{option}>", "-disable-output", "-"
+                ], input_text=source)
+                self.assertNotEqual(result.returncode, 0)
+        capped = self.transform(source, "irveil<profile=general;max-adds=1>")
+        body = function_body(capped, "protected")
+        self.assertEqual(len(re.findall(r"add i32 %a, %b", body)), 7)
+
     def test_per_function_cap_and_bounded_expansion(self):
         source = self.fixture("selection.ll")
         original = function_body(self.transform(source, "verify"), "protected")

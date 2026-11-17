@@ -355,3 +355,114 @@ hash matched. Each all-family build decoded one byte load, within the new defaul
 this revised corpus run. These fixtures do not exercise budget exhaustion; the
 separate LLVM regression uses a two-byte string with 4097 static readers and
 checks atomic skipping, module-wide accounting and later globals that still fit.
+
+## Bounded flattening experiment
+
+Source `2d79275` was evaluated on Linux x86-64 under WSL2 with LLVM/Clang 18.1.3,
+Ghidra 12.2 and Temurin 25.0.5+8, using the
+[predefined flattening protocol](re-validation.md#bounded-flattening-protocol).
+Only `transforms=flatten` was enabled, at seed 42 and the default 16 dispatched
+blocks/256 added instructions per function. Ordinary, flattened and reoptimized
+variants were built at O2/O3. Reoptimized means an extra `opt default<O2/O3>`
+pipeline on flattened IR, then the same backend level with IR passes disabled.
+The source's volatile cells and disabled loop unrolling apply to every variant.
+This is a synthetic integer/control-flow workload, not an application sample.
+
+### Behavior and IR work
+
+All six symbol companions and stripped copies agreed on 633 boundary/random rows,
+each containing eight function results and four resulting memory cells. Their
+behavior SHA-256 was
+`e9b7c7c999d3e186e0c8f25727634f34f9eaf7279d3326de9c9c06e402fae16e`.
+Every benchmark run also agreed on checksum `afa8a286231f35d5` for 1,000,000
+iterations. The separate tests cover O0/O1/O2/O3, debug info, ASan/UBSan, shared
+atomic calls, parallel PHIs, critical edges and reoptimization; behavior checks
+remain distinct from the observations about decompilation below.
+
+At both O2/O3, five functions flattened: branch logic, a loop, loop-carried PHIs,
+possibly aliased memory and recursive source. LLVM had already converted the
+recursive source to a loop in these optimized builds. Module totals were 34
+dispatched blocks, 42 private spill slots and 199 net additional IR instructions.
+The input switch and straight-line selected function were unsupported controls;
+the unselected function was never eligible. No function exhausted its budget.
+
+Initially each transformed function had a PHI-fed switch. Reoptimization removed
+all 42 IR spill slots and the switches in the branch/memory cases. Three remaining
+functions still had PHI-fed switches; all five retained the processed/flattened
+attributes. Thus attributes record past work, not survival. Backends also split
+or duplicate dispatch routing: four direct flattened functions contained indirect
+jumps, while the memory case used direct branches with state comparisons.
+
+### Native footprint and timing
+
+Native cost is measured over each complete ELF symbol from its own companion,
+including padding within that symbol and excluding padding beyond its size.
+It is independent of Ghidra's inferred function body, which can omit code.
+The following O2 values are ordinary / flatten / reoptimized:
+
+| Function | Native instructions | Symbol bytes |
+| --- | --- | --- |
+| Branch | 18 / 43 / 19 | 39 / 166 / 41 |
+| Loop | 29 / 95 / 81 | 70 / 448 / 286 |
+| Loop-carried PHIs | 23 / 66 / 47 | 65 / 325 / 164 |
+| Aliased memory | 15 / 38 / 15 | 29 / 138 / 28 |
+| Recursive source | 41 / 110 / 116 | 87 / 492 / 410 |
+
+At O3 the branch row is 22 / 43 / 23 instructions and 45 / 166 / 47 bytes; the
+other positive rows are unchanged. Negative controls retain their counts/bytes
+within each optimization level. All stripped files are 14,320 bytes because
+alignment/layout masks local growth. In-symbol instruction counts include NOP
+padding; they are static footprint observations, not dynamic instruction counts.
+
+Five measured runs per variant followed one omitted warmup, with alternating
+compilation pairs and forward/reverse runtime orders. The benchmark invokes the
+five positive functions with deterministic inputs and volatile cells. Median
+process wall times in seconds were:
+
+| Mode | Compile ordinary / flatten | Run ordinary / flatten / reoptimized |
+| --- | --- | --- |
+| O2 | 0.306 / 0.279 | 0.0409 / 0.0973 / 0.0840 |
+| O3 | 0.330 / 0.283 | 0.0430 / 0.0924 / 0.0860 |
+
+Flattened runtime was approximately 2.38x/O2 and 2.15x/O3 the ordinary median;
+reoptimized runtime was 2.06x/O2 and 2.00x/O3. The lower observed compilation
+medians do not establish a compiler speed improvement. These include process
+startup, warm caches, two-CPU affinity and uncontrolled host load; no isolated-pass
+profiling or confidence interval was measured. Raw samples and timed binary-hash
+checks are retained with the local evidence. These timings do not generalize to
+other programs, configurations or machines.
+
+### Ghidra survival and counterevidence
+
+Eight fresh Ghidra jobs exported 64 records, including two stable repeated normal
+controls. Heap/CPU limits and all analysis/decompilation deadlines were unchanged;
+there were no timeouts, cancellations or exporter failures. Each function entry
+came from its own symbol companion, with no source prototypes. This grants known
+locations and does not measure discovery.
+
+The direct flattened branch decompiles to switches on the original boolean tests,
+not an opaque central state machine. Loop/PHI cases expose the original iteration
+conditions and arithmetic, with extra temporaries/gotos/switches. The memory case
+retains public state comparisons; after reoptimization it becomes ordinary direct
+flow. Reoptimized branch and memory cases lose their dispatch entirely. Native
+state routing survives in the other three cases, but this is structural retention,
+not measured analyst resistance or proof of a harder recovery problem.
+
+The direct flattened recursive-source case has a jumptable Ghidra cannot fully
+recover and treats an indirect jump as a call. Its inferred body covers only 107
+of the symbol's 492 bytes. Reoptimized loop and recursive-source cases are inferred
+as void/infinite loops despite returning normally in native executions. These six
+O2/O3 records have explicit known-limit flags; their C/P-code/block comparisons
+are excluded from difficulty claims. Normal padding gaps can also make inferred
+bodies smaller than ELF symbols, so byte differences alone do not diagnose a
+missing semantic path. No decompiler error is counted as protection.
+
+The candidate remains opt-in. It adds substantial runtime and local code cost;
+ordinary optimization and decompilation recover important parts of the flow.
+No result here justifies enabling it by default or promising general survival.
+Plugin SHA-256:
+`5b197b2d27add349c159b612e69934f21ab91bae7847e4dde8c80c2fd6ab7aad`.
+Fixture SHA-256:
+`61e655d993425ecd87293e57d3c751cffe25b28bc973309f867231b6e30b735d`.
+Final structured evidence and raw exports stay in `work/flatten-evaluation-final/`;
+the earlier local run is diagnostic evidence preceding the ELF-symbol cost fix.

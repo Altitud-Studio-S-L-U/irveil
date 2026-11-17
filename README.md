@@ -212,6 +212,10 @@ Reoptimization can promote spills or recover control flow. This experiment has
 no anti-optimization, anti-debug or universal-survival guarantee. The detailed
 [flattening contract](docs/design.md#bounded-flattening-experiment) defines the
 semantic argument, exclusions and exact preflight bound.
+The [measured experiment](docs/re-evaluation.md#bounded-flattening-experiment)
+records native/reoptimized survival, Ghidra recovery and partial-analysis limits,
+and roughly 2.2–2.4x runtime on its synthetic workload. It does not justify a
+default change or a general resistance claim.
 
 ## Transformation contract
 

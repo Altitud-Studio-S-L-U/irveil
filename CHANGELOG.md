@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an explicit `flatten` experiment with whole-function preflight, bounded
+  SSA dispatch and private scalar spills. Preserve profile defaults and skip
+  unsupported CFG/ABI/stack cases. Record native/reoptimized behavior, process
+  cost and Ghidra counterevidence using complete ELF-symbol footprint counts.
+
 - Bound string decoder instructions independently of encoded bytes with a
   module-wide load budget; skip whole globals that exceed it. Validate CMake
   transform delimiters and isolate parser state from consumer variables.

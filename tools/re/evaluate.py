@@ -46,11 +46,11 @@ def normalize_c(text):
     return " ".join(text.split())
 
 
-def mapped_functions(symbols):
+def mapped_functions(symbols, names=FUNCTIONS):
     found = {}
     for line in symbols.splitlines():
         match = re.match(r"^([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+[tT]\s+(\S+)\s*$", line)
-        if not match or match[3] not in FUNCTIONS:
+        if not match or match[3] not in names:
             continue
         name = match[3]
         if name in found:
@@ -59,9 +59,9 @@ def mapped_functions(symbols):
         if size < 1 or size > 65536:
             raise ValueError("Companion function size out of bounds: " + name)
         found[name] = {"id": name, "address": format(address, "x"), "size": size}
-    if set(found) != set(FUNCTIONS):
-        raise ValueError("Missing companion functions: " + ", ".join(sorted(set(FUNCTIONS) - set(found))))
-    return [found[name] for name in FUNCTIONS]
+    if set(found) != set(names):
+        raise ValueError("Missing companion functions: " + ", ".join(sorted(set(names) - set(found))))
+    return [found[name] for name in names]
 
 
 def validate_export(path, manifest):
@@ -116,18 +116,20 @@ def validate_export(path, manifest):
     return report, result
 
 
-def compare_control(left, right):
+def compare_control(left, right, names=FUNCTIONS):
     fields = ["nativeInstructions", "nativeInstructionBytes", "nativeCalls", "nativeJumps",
               "rawPcodeOperations", "rawPcodeHistogram", "highPcodeOperations", "highPcodeHistogram",
               "highBasicBlocks", "highEdges", "normalizedC"]
     differences = []
-    for name in FUNCTIONS:
+    if set(left) != set(names) or set(right) != set(names):
+        raise ValueError("Repeated analysis function set differs from the requested corpus")
+    for name in names:
         for field in fields:
             if left[name].get(field) != right[name].get(field):
                 differences.append({"function": name, "field": field})
     if differences:
         raise ValueError("Repeated ordinary analysis was unstable: " + json.dumps(differences))
-    return {"status": "passed", "functions": len(FUNCTIONS), "fieldsCompared": fields}
+    return {"status": "passed", "functions": len(names), "fieldsCompared": fields}
 
 
 class Commands:
@@ -174,23 +176,25 @@ class Commands:
         return destination.read_text(encoding="utf-8", errors="replace")
 
 
-def build_case(args, commands, optimization, variant, plugin, directory):
+def build_case(args, commands, optimization, variant, plugin, directory, *,
+               source=CORPUS, names=FUNCTIONS, extra_flags=()):
     directory.mkdir()
     binary = directory / "corpus.symbols"
     stripped = directory / "corpus.stripped"
     flags = ["-std=c++17", "-" + optimization, "-g0", "-fno-pie", "-no-pie", "-I", ROOT / "include"]
     if plugin:
         flags.append("-fpass-plugin=" + str(plugin))
-    commands.run([args.llvm_bin / "clang++", *flags, CORPUS, "-o", binary], f"{optimization}-{variant}-compile")
+    flags.extend(extra_flags)
+    commands.run([args.llvm_bin / "clang++", *flags, source, "-o", binary], f"{optimization}-{variant}-compile")
     if binary.stat().st_size > MAX_BINARY_BYTES:
         raise ValueError("Generated binary exceeds 32 MiB")
     symbols = commands.run([args.llvm_bin / "llvm-nm", "--numeric-sort", "--print-size", "--defined-only", binary], f"{optimization}-{variant}-symbols")
-    functions = mapped_functions(symbols)
+    functions = mapped_functions(symbols, names)
     shutil.copyfile(binary, stripped)
     commands.run([args.llvm_bin / "llvm-strip", "--strip-all", stripped], f"{optimization}-{variant}-strip")
     stripped.chmod(0o700)
     symbol_output = commands.run([args.llvm_bin / "llvm-nm", stripped], f"{optimization}-{variant}-stripped-symbols")
-    if any(re.search(r"\b" + name + r"\b", symbol_output) for name in FUNCTIONS):
+    if any(re.search(r"\b" + name + r"\b", symbol_output) for name in names):
         raise ValueError("Selected symbols survived --strip-all")
     companions_output = commands.run([binary], f"{optimization}-{variant}-behavior-symbols", output_limit=1048576)
     stripped_output = commands.run([stripped], f"{optimization}-{variant}-behavior-stripped", output_limit=1048576)
@@ -198,7 +202,7 @@ def build_case(args, commands, optimization, variant, plugin, directory):
         raise ValueError("Stripping changed fixture behavior")
     if len(stripped_output.splitlines()) != 633:
         raise ValueError("Behavior corpus was not fully executed")
-    disassembly = commands.run([args.llvm_bin / "llvm-objdump", "--no-show-raw-insn", "--disassemble-symbols=" + ",".join(FUNCTIONS), binary], f"{optimization}-{variant}-disassembly")
+    disassembly = commands.run([args.llvm_bin / "llvm-objdump", "--no-show-raw-insn", "--disassemble-symbols=" + ",".join(names), binary], f"{optimization}-{variant}-disassembly")
     (directory / "disassembly.txt").write_text(disassembly, encoding="utf-8")
     commands.run(["readelf", "--wide", "--file-header", "--sections", stripped], f"{optimization}-{variant}-readelf")
     commands.run(["strings", "-a", stripped], f"{optimization}-{variant}-strings")

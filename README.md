@@ -154,7 +154,7 @@ Clang accepts matching `-mllvm -irveil-transforms=...`, `-irveil-max-edges`,
 `-irveil-max-switch-cases`, `-irveil-max-constants`, `-irveil-max-string-bytes`
 and `-irveil-max-string-loads`
 options with the same early DSO load shown above. The installed CMake helper
-accepts `PROFILE`, `TRANSFORMS`, `MAX_EDGES`, `MAX_SWITCH_CASES`, `MAX_CONSTANTS`
+accepts `PROFILE`, `TRANSFORMS`, `MAX_EDGES`, `MAX_SWITCH_CASES`, `MAX_CONSTANTS`,
 `MAX_STRING_BYTES` and `MAX_STRING_LOADS` alongside the existing options. For example:
 
 ```cmake

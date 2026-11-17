@@ -344,3 +344,14 @@ Candidate plugin SHA-256:
 Fixture SHA-256:
 `4fbb306d7692511044e60c541d440b81b35a0366e49cf891a560766511450e18`.
 Reproduce with the [framework protocol](re-validation.md#experimental-framework-protocol).
+
+The decoder-load budget added in source `daa47a0` was evaluated with a new plugin
+SHA-256 `37686d36f59b8354e2e0785452d2a1e002df5b323bbfc6ea01443c20ffe1322e`.
+The full six-build/eight-Ghidra-job protocol completed again, with both repeated
+controls stable. All six native binaries and stripped copies were byte-for-byte
+identical to the corresponding earlier artifacts, and every 633-row behavior
+hash matched. Each all-family build decoded one byte load, within the new default
+4096-load module budget. Thus the table and counterevidence above also describe
+this revised corpus run. These fixtures do not exercise budget exhaustion; the
+separate LLVM regression uses a two-byte string with 4097 static readers and
+checks atomic skipping, module-wide accounting and later globals that still fit.

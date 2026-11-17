@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound string decoder instructions independently of encoded bytes with a
+  module-wide load budget; skip whole globals that exceed it. Validate CMake
+  transform delimiters and isolate parser state from consumer variables.
+
 - Add explicit modular transform masks and bounded opt-in CFG/backedge routing,
   switch lowering, constant splitting and private scalar-load string encoding.
   Keep arithmetic and general profile defaults unchanged; preserve PHIs, branch

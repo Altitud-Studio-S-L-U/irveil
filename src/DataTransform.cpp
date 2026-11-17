@@ -46,6 +46,7 @@ bool encodeConstants(llvm::Function &function, const Config &config,
 namespace {
 bool collectLoads(llvm::GlobalVariable &global,
                   const llvm::SmallPtrSetImpl<llvm::Function *> &eligible,
+                  std::uint32_t limit,
                   llvm::SmallVectorImpl<llvm::LoadInst *> &loads) {
   llvm::SmallVector<llvm::Value *, 16> pending{&global};
   llvm::SmallPtrSet<llvm::Value *, 32> visited;
@@ -56,6 +57,7 @@ bool collectLoads(llvm::GlobalVariable &global,
       if (auto *load = llvm::dyn_cast<llvm::LoadInst>(user)) {
         if (load->getPointerOperand() != pointer || !load->getType()->isIntegerTy(8) ||
             load->isVolatile() || load->isAtomic() || !eligible.contains(load->getFunction())) return false;
+        if (loads.size() == limit) return false;
         loads.push_back(load);
       } else if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(user)) {
         if (gep->getPointerOperand() != pointer || !eligible.contains(gep->getFunction())) return false;
@@ -78,14 +80,18 @@ void encodeStrings(llvm::Module &module, llvm::ArrayRef<llvm::Function *> functi
   if (!(effectiveTransforms(config) & Strings)) return;
   llvm::SmallPtrSet<llvm::Function *, 16> eligible(functions.begin(), functions.end());
   std::uint32_t remaining = config.maxStringBytesPerModule;
+  std::uint32_t remainingLoads = config.maxStringLoadsPerModule;
   for (auto &global : module.globals()) {
+    if (!remaining || !remainingLoads) break;
     if (!global.hasPrivateLinkage() || !global.isConstant() || !global.hasInitializer() ||
         global.isThreadLocal() || global.hasSection() || global.isExternallyInitialized() ||
         global.getAddressSpace() != 0 || global.getMetadata("irveil.encoded")) continue;
     auto *data = llvm::dyn_cast<llvm::ConstantDataArray>(global.getInitializer());
     if (!data || !data->isCString() || data->getNumElements() > remaining) continue;
     llvm::SmallVector<llvm::LoadInst *, 16> loads;
-    if (!collectLoads(global, eligible, loads)) continue;
+    // The complete global must fit: accepting only some readers would expose
+    // encoded storage to the skipped readers. Do not mutate on budget failure.
+    if (!collectLoads(global, eligible, remainingLoads, loads)) continue;
     // Seed and key are public diversification inputs, not encryption secrets.
     const auto key = static_cast<std::uint8_t>((config.seed ^ data->getNumElements()) | 1);
     llvm::SmallVector<std::uint8_t, 64> bytes;
@@ -105,8 +111,10 @@ void encodeStrings(llvm::Module &module, llvm::ArrayRef<llvm::Function *> functi
       load->getFunction()->addFnAttr("irveil.processed");
     }
     remaining -= bytes.size();
+    remainingLoads -= loads.size();
     ++statistics.encodedStrings;
     statistics.encodedStringBytes += bytes.size();
+    statistics.decodedStringLoads += loads.size();
   }
 }
 } // namespace irveil

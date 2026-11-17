@@ -144,17 +144,23 @@ lowered switches. CFG and loop edges share `max-edges` (1..256, default 32).
 Switch cases share `max-switch-cases` per function (1..256, default 64); an entire
 switch is skipped if it does not fit. Literal operands share `max-constants`
 (1..4096, default 32). String bytes, including terminators, share
-`max-string-bytes` per module (1..65536, default 4096).
+`max-string-bytes` per module (1..65536, default 4096). Decoded byte loads share
+`max-string-loads` per module (1..65536, default 4096), independently of byte count.
+A global is skipped without changing its initializer or any reader if all its
+loads do not fit the remaining budget. This bounds string instruction growth even
+when a small array has many readers.
 
 Clang accepts matching `-mllvm -irveil-transforms=...`, `-irveil-max-edges`,
-`-irveil-max-switch-cases`, `-irveil-max-constants` and `-irveil-max-string-bytes`
+`-irveil-max-switch-cases`, `-irveil-max-constants`, `-irveil-max-string-bytes`
+and `-irveil-max-string-loads`
 options with the same early DSO load shown above. The installed CMake helper
 accepts `PROFILE`, `TRANSFORMS`, `MAX_EDGES`, `MAX_SWITCH_CASES`, `MAX_CONSTANTS`
-and `MAX_STRING_BYTES` alongside the existing options. For example:
+`MAX_STRING_BYTES` and `MAX_STRING_LOADS` alongside the existing options. For example:
 
 ```cmake
 irveil_protect_target(app TRANSFORMS cfg+loops+switch+constants+strings
-  MAX_EDGES 16 MAX_SWITCH_CASES 32 MAX_CONSTANTS 16 MAX_STRING_BYTES 1024 REPORT)
+  MAX_EDGES 16 MAX_SWITCH_CASES 32 MAX_CONSTANTS 16
+  MAX_STRING_BYTES 1024 MAX_STRING_LOADS 256 REPORT)
 ```
 
 Structural rewrites skip functions with EH/personality, address-taken blocks,

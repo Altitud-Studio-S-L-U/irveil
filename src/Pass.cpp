@@ -167,7 +167,13 @@ llvm::PreservedAnalyses IRVeilPass::run(
                  << " switches=" << result->loweredSwitches
                  << " constants=" << result->encodedConstants
                  << " strings=" << result->encodedStrings
-                 << " string-bytes=" << result->encodedStringBytes << '\n';
+                 << " string-bytes=" << result->encodedStringBytes
+                 << " decoded-string-loads=" << result->decodedStringLoads
+                 << " max-edges=" << config_.maxEdgesPerFunction
+                 << " max-switch-cases=" << config_.maxSwitchCasesPerFunction
+                 << " max-constants=" << config_.maxConstantsPerFunction
+                 << " max-string-bytes=" << config_.maxStringBytesPerModule
+                 << " max-string-loads=" << config_.maxStringLoadsPerModule << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

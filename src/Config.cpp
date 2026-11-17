@@ -51,7 +51,8 @@ llvm::Error validateConfig(const Config &config) {
   if (config.maxEdgesPerFunction < 1 || config.maxEdgesPerFunction > 256 ||
       config.maxSwitchCasesPerFunction < 1 || config.maxSwitchCasesPerFunction > 256 ||
       config.maxConstantsPerFunction < 1 || config.maxConstantsPerFunction > 4096 ||
-      config.maxStringBytesPerModule < 1 || config.maxStringBytesPerModule > 65536)
+      config.maxStringBytesPerModule < 1 || config.maxStringBytesPerModule > 65536 ||
+      config.maxStringLoadsPerModule < 1 || config.maxStringLoadsPerModule > 65536)
     return llvm::createStringError(std::errc::invalid_argument, "IRVeil invalid structural or data expansion limit");
   return llvm::Error::success();
 }
@@ -78,6 +79,7 @@ bool parseConfigOption(llvm::StringRef key, llvm::StringRef text, Config &config
   else if (key == "max-switch-cases") { destination = &config.maxSwitchCasesPerFunction; maximum = 256; }
   else if (key == "max-constants") destination = &config.maxConstantsPerFunction;
   else if (key == "max-string-bytes") { destination = &config.maxStringBytesPerModule; maximum = 65536; }
+  else if (key == "max-string-loads") { destination = &config.maxStringLoadsPerModule; maximum = 65536; }
   if (!destination || value < 1 || value > maximum) return false;
   *destination = static_cast<std::uint32_t>(value);
   return true;

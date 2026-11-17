@@ -135,9 +135,22 @@ and jump per budgeted edge. A switch with N cases adds N test blocks, N comparis
 N conditional branches, one final branch and one freeze, replacing the original
 switch; sum of N is capped per function. Zero-case switches still consume the
 switch-count budget. Literal work adds one instruction per capped operand. String
-bytes have a module-wide cap; each original accepted byte load adds one XOR. The
-pointer-use walk and its auxiliary storage scale with the inspected use graph;
-load expansion is proportional to original loads, not solely to string byte count.
+bytes and decoded loads have independent module-wide caps; each accepted byte
+load adds one XOR. `maxStringLoadsPerModule` defaults to 4096 and accepts 1..65536
+through every adapter. Collect at most the remaining load budget and reject an
+entire global on the first excess reader, before mutating its initializer or any
+load. Later smaller globals may still fit. No partial encoding is permitted.
+The pointer-use walk and its visited set still scale with the inspected use graph.
+Reports include all effective expansion limits and the decoded-load count.
+
+For one function, let M be rewritten original instructions, E routed edges,
+C lowered switch cases, S lowered switches, K literal operands and L decoded
+byte loads. The net instruction increase is at most `7*M + E + 2*C + S + K + L`:
+subtraction is the largest instruction emitter at eight replacements for one
+original; each switch contributes `2*N+1` net instructions. The corresponding
+configured caps bound M/E/C/S/K, and the sum of L across functions is bounded by
+`maxStringLoadsPerModule`. This is an IR instruction bound, not a native-code
+size, compile-time or runtime guarantee.
 Dominator analysis, PHI/use-list repair and the rest of LLVM have their own costs;
 the arithmetic-only complexity bound above does not describe all new families.
 

@@ -285,7 +285,9 @@ no:
                        "transforms=adds++cfg", "transforms=adds+adds", "transforms=other",
                        "transforms=none+adds", "transforms=none;transforms=cfg",
                        "max-edges=0", "max-edges=257", "max-switch-cases=257",
-                       "max-constants=4097", "max-string-bytes=65537"]:
+                       "max-constants=4097", "max-string-bytes=65537",
+                       "max-string-loads=0", "max-string-loads=65537",
+                       "max-string-loads=1;max-string-loads=2"]:
             with self.subTest(option=option):
                 result = execute([self.llvm / "opt", "-load-pass-plugin", self.plugin,
                                   f"-passes=irveil<{option}>", "-disable-output", "-"], input_text=source)
@@ -533,6 +535,57 @@ define i32 @main() {
                 self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
                     self.transform(source, "irveil<transforms=strings>")))
 
+    def test_string_default_load_budget_is_independent_of_byte_count(self):
+        source = (annotations(["f"]) + '@s = private constant [2 x i8] c"A\\00"\n' +
+                  'define i8 @f() {\n' +
+                  ''.join(f'  %v{i} = load i8, ptr @s\n' for i in range(4097)) +
+                  '  ret i8 %v4096\n}\n')
+        output = self.transform(source, "irveil<transforms=strings;max-string-bytes=2>")
+        self.assertEqual(len(re.findall(r"%irveil.string.byte\d* =", output)), 0)
+        self.assertIn('c"A\\00"', output)
+
+    def test_string_load_budget_is_module_wide_and_skips_whole_globals(self):
+        source = annotations(["f", "g"]) + '''
+@a = private constant [2 x i8] c"A\\00"
+@b = private constant [2 x i8] c"B\\00"
+@c = private constant [2 x i8] c"C\\00"
+define i8 @f() {
+  %a = load i8, ptr @a
+  %b = load i8, ptr @b
+  %c = load i8, ptr @c
+  %ab = add i8 %a, %b
+  %abc = add i8 %ab, %c
+  ret i8 %abc
+}
+define i8 @g() {
+  %a = load i8, ptr @a
+  %b = load i8, ptr @b
+  %ab = add i8 %a, %b
+  ret i8 %ab
+}
+define i32 @main() {
+  %f = call i8 @f()
+  %g = call i8 @g()
+  %f_bad = icmp ne i8 %f, -58
+  %g_bad = icmp ne i8 %g, -125
+  %bad = or i1 %f_bad, %g_bad
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        for cap, expected in [(1, 1), (2, 2), (3, 3), (5, 5), (65536, 5)]:
+            with self.subTest(cap=cap):
+                pipeline = f"irveil<transforms=strings;max-string-loads={cap}>"
+                output = self.transform(source, pipeline)
+                self.assertEqual(len(re.findall(r"%irveil.string.byte\d* =", output)), expected)
+                if cap == 3:
+                    self.assertRegex(output, r'@b = private constant \[2 x i8\] c"B\\00"\n')
+                    self.assertRegex(output, r'@c = private constant.*!irveil.encoded')
+                path = self.work / "string-budget.ll"
+                path.write_text(output)
+                self.checked([self.llvm / "lli", path])
+                self.assertEqual(canonical_ir(output), canonical_ir(self.transform(output, pipeline)))
+
     def test_per_function_cap_and_bounded_expansion(self):
         source = self.fixture("selection.ll")
         original = function_body(self.transform(source, "verify"), "protected")
@@ -716,7 +769,9 @@ define i32 @main() {
                 ("-irveil-seed=0x10", "unsigned decimal"),
                 ("-irveil-seed=18446744073709551616", "unsigned decimal"),
                 ("-irveil-max-adds=0", "1..4096"),
-                ("-irveil-max-adds=4097", "1..4096")]:
+                ("-irveil-max-adds=4097", "1..4096"),
+                ("-irveil-max-string-loads=0", "max-string-loads"),
+                ("-irveil-max-string-loads=65537", "max-string-loads")]:
             with self.subTest(option=option):
                 result = execute([*command, "-mllvm", option])
                 self.assertNotEqual(result.returncode, 0)

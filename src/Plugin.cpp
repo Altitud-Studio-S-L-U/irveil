@@ -20,6 +20,7 @@ llvm::cl::opt<std::string> ClangMaxEdges("irveil-max-edges", llvm::cl::init("32"
 llvm::cl::opt<std::string> ClangMaxSwitchCases("irveil-max-switch-cases", llvm::cl::init("64"));
 llvm::cl::opt<std::string> ClangMaxConstants("irveil-max-constants", llvm::cl::init("32"));
 llvm::cl::opt<std::string> ClangMaxStringBytes("irveil-max-string-bytes", llvm::cl::init("4096"));
+llvm::cl::opt<std::string> ClangMaxStringLoads("irveil-max-string-loads", llvm::cl::init("4096"));
 llvm::cl::opt<bool> ClangReport("irveil-report", llvm::cl::init(false));
 
 bool parsePipelineName(llvm::StringRef name, irveil::Config &config) {
@@ -57,6 +58,7 @@ irveil::Config clangConfig() {
   parse("max-switch-cases", ClangMaxSwitchCases.getValue());
   parse("max-constants", ClangMaxConstants.getValue());
   parse("max-string-bytes", ClangMaxStringBytes.getValue());
+  parse("max-string-loads", ClangMaxStringLoads.getValue());
   return config;
 }
 } // namespace

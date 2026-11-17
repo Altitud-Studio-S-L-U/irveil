@@ -139,6 +139,7 @@ class CompilerPackageTests(unittest.TestCase):
             ("TRANSFORMS unknown", "TRANSFORMS"), ("MAX_EDGES 257", "256"),
             ("MAX_SWITCH_CASES 0", "between 1"), ("MAX_CONSTANTS 4097", "4096"),
             ("MAX_STRING_BYTES 65537", "65536"),
+            ("MAX_STRING_LOADS 0", "between 1"), ("MAX_STRING_LOADS 65537", "65536"),
         ]
         preamble = ("cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
                     "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\n"
@@ -190,12 +191,13 @@ class CompilerPackageTests(unittest.TestCase):
             "cmake_minimum_required(VERSION 3.20)\nproject(Consumer LANGUAGES CXX)\n"
             "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\nadd_executable(app main.cpp)\n"
             "irveil_protect_target(app PROFILE general TRANSFORMS sub+constants "
-            "MAX_EDGES 1 MAX_SWITCH_CASES 2 MAX_CONSTANTS 3 MAX_STRING_BYTES 4 REPORT)\n")
+            "MAX_EDGES 1 MAX_SWITCH_CASES 2 MAX_CONSTANTS 3 MAX_STRING_BYTES 4 MAX_STRING_LOADS 5 REPORT)\n")
         build = self.work / "modular build"
         self.require_configured(self.configure(source, build, "-DCMAKE_BUILD_TYPE=Release"))
         result = self.checked([self.cmake, "--build", build, "--parallel", "2"])
         self.assertIn("transforms=258", result.stdout + result.stderr)
         self.assertRegex(result.stdout + result.stderr, r"constants=[1-9]")
+        self.assertIn("max-string-loads=5", result.stdout + result.stderr)
         self.checked([build / "app"])
 
     def test_helper_isolates_parser_state_and_rejects_cmake_list_separators(self):
@@ -207,11 +209,11 @@ class CompilerPackageTests(unittest.TestCase):
             "find_package(IRVeil CONFIG REQUIRED COMPONENTS Plugin)\n"
             "add_executable(app main.cpp)\n")
         inherited = ("PROFILE", "TRANSFORMS", "MAX_EDGES", "MAX_SWITCH_CASES",
-                     "MAX_CONSTANTS", "MAX_STRING_BYTES")
+                     "MAX_CONSTANTS", "MAX_STRING_BYTES", "MAX_STRING_LOADS")
         (source / "CMakeLists.txt").write_text(preamble +
             "".join(f"set(seen_{option} TRUE)\n" for option in inherited) +
             "irveil_protect_target(app PROFILE general TRANSFORMS cfg+loops "
-            "MAX_EDGES 1 MAX_SWITCH_CASES 1 MAX_CONSTANTS 1 MAX_STRING_BYTES 1)\n")
+            "MAX_EDGES 1 MAX_SWITCH_CASES 1 MAX_CONSTANTS 1 MAX_STRING_BYTES 1 MAX_STRING_LOADS 1)\n")
         with self.subTest(inherited=True):
             self.require_configured(self.configure(source, self.work / "inherited parser build"))
         for index, text in enumerate(["adds;cfg", ";adds", "adds;", "adds+;cfg"]):

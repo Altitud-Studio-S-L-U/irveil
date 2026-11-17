@@ -31,6 +31,7 @@ struct Config {
   std::uint32_t maxSwitchCasesPerFunction = 64;
   std::uint32_t maxConstantsPerFunction = 32;
   std::uint32_t maxStringBytesPerModule = 4096;
+  std::uint32_t maxStringLoadsPerModule = 4096;
 };
 
 struct Statistics {
@@ -48,6 +49,7 @@ struct Statistics {
   std::uint64_t encodedConstants = 0;
   std::uint64_t encodedStrings = 0;
   std::uint64_t encodedStringBytes = 0;
+  std::uint64_t decodedStringLoads = 0;
 };
 
 // Selects functions carrying Clang's annotate("irveil") in llvm.global.annotations.

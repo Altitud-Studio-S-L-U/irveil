@@ -44,7 +44,7 @@ int main() {
   }
   // Invalid family masks and structural/data limits must fail before the
   // valid addition can be changed by any enabled family.
-  for (unsigned option = 0; option < 6; ++option) {
+  for (unsigned option = 0; option < 8; ++option) {
     irveil::Config invalid;
     switch (option) {
     case 0: invalid.transforms = 1u << 31; break;
@@ -53,6 +53,8 @@ int main() {
     case 3: invalid.maxSwitchCasesPerFunction = 257; break;
     case 4: invalid.maxConstantsPerFunction = 4097; break;
     case 5: invalid.maxStringBytesPerModule = 65537; break;
+    case 6: invalid.maxStringLoadsPerModule = 65537; break;
+    case 7: invalid.maxStringLoadsPerModule = 0; break;
     }
     auto rejected = irveil::applyObfuscation(module, invalid);
     if (rejected) return 6;

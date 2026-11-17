@@ -364,6 +364,102 @@ exit:
         self.assertRegex(output, r"irveil.loop.edge:[^\n]*\n\s+br label %loop, !llvm.loop")
         self.assertNotRegex(output, r"br i1[^\n]*!llvm.loop")
 
+    def test_switch_self_edges_and_zero_case_preserve_phi_values(self):
+        source = annotations(["f", "zero"]) + '''
+define i8 @f() {
+entry:
+  br label %loop
+loop:
+  %i = phi i8 [ 0, %entry ], [ %next, %loop ], [ %next, %loop ]
+  %next = add i8 %i, 1
+  switch i8 %i, label %loop [ i8 0, label %loop
+                             i8 2, label %exit ]
+exit:
+  %r = phi i8 [ %next, %loop ]
+  ret i8 %r
+}
+define i8 @zero() {
+entry:
+  switch i8 0, label %exit []
+exit:
+  %r = phi i8 [ 17, %entry ]
+  ret i8 %r
+}
+define i32 @main() {
+  %f = call i8 @f()
+  %z = call i8 @zero()
+  %sum = add i8 %f, %z
+  %bad = icmp ne i8 %sum, 20
+  %r = zext i1 %bad to i32
+  ret i32 %r
+}
+'''
+        for families in ["switch", "cfg+loops+switch", "adds+constants+switch"]:
+            with self.subTest(families=families):
+                pipeline = f"irveil<transforms={families}>"
+                output = self.transform(source, pipeline)
+                self.assertNotIn("switch i8", output)
+                path = self.work / "switch-self-edge.ll"
+                path.write_text(output)
+                self.checked([self.llvm / "lli", path])
+                self.assertEqual(canonical_ir(self.transform(output, "verify")),
+                                 canonical_ir(self.transform(output, pipeline)))
+
+    def test_cfg_excludes_personality_and_restricted_calls(self):
+        for restriction in ["convergent", "noduplicate", "returns_twice", "personality"]:
+            with self.subTest(restriction=restriction):
+                declaration = ("declare i32 @personality(...)\n" if restriction == "personality"
+                               else f"declare void @restricted() {restriction}\n")
+                function_attribute = " personality ptr @personality" if restriction == "personality" else ""
+                call = "" if restriction == "personality" else "  call void @restricted()\n"
+                source = (annotations(["f"]) + declaration +
+                          f"define void @f(){function_attribute} {{\nentry:\n" + call +
+                          "  br label %exit\nexit:\n  ret void\n}\n")
+                self.assertEqual(canonical_ir(self.transform(source, "verify")), canonical_ir(
+                    self.transform(source, "irveil<transforms=cfg+loops+switch>")))
+
+    def test_undef_operands_are_frozen_for_subtraction_and_bitwise(self):
+        for opcode in ["sub", "and", "or", "xor"]:
+            with self.subTest(opcode=opcode):
+                source = (annotations(["f"]) + "define i8 @f(i8 %a) {\n" +
+                          f"  %r = {opcode} i8 %a, undef\n  ret i8 %r\n}}\n")
+                body = function_body(self.transform(source, "irveil<profile=general>"), "f")
+                self.assertEqual(body.count("undef"), 1)
+                self.assertIn("freeze i8 undef", body)
+                self.assertEqual(len(re.findall(r"\bfreeze i8\b", body)), 2)
+
+    def test_combined_net_instruction_expansion_obeys_family_budgets(self):
+        source = annotations(["f"]) + '''
+@s = private constant [2 x i8] c"X\\00"
+define i32 @f(i32 %a, i32 %b) {
+entry:
+  %byte = load i8, ptr @s
+  %diff = sub i32 %a, %b
+  %sum = add i32 %diff, 17
+  br label %loop
+loop:
+  %i = phi i8 [ 0, %entry ], [ %next, %loop ]
+  %next = add i8 %i, 1
+  switch i8 %i, label %loop [ i8 3, label %exit ]
+exit:
+  ret i32 %sum
+}
+'''
+        def count_instructions(body):
+            # Count opcode lines, excluding printed switch cases and labels.
+            return sum(bool(re.match(r"^  (?:%[-.\w]+ = )?[a-z]+(?: |$)", line))
+                       for line in body.splitlines())
+        original = count_instructions(function_body(self.transform(source, "verify"), "f"))
+        families = "adds+sub+bitwise+cmp+branches+cfg+loops+switch+constants+strings"
+        for cap in [1, 2, 3]:
+            pipeline = (f"irveil<transforms={families};max-adds={cap};max-edges=1;"
+                        "max-switch-cases=1;max-constants=1;max-string-loads=1>")
+            body = function_body(self.transform(source, pipeline), "f")
+            # M<=cap, E<=1, C<=1, S<=1, K<=1 and L<=1.
+            self.assertLessEqual(count_instructions(body) - original, 7 * cap + 6)
+            self.assertIn("irveil.string.byte", body)
+            self.assertNotIn("switch i8", body)
+
     def test_exhaustive_general_integer_operations_and_all_predicates(self):
         operations = [(op, None) for op in ["sub", "and", "or", "xor"]]
         operations += [("icmp", p) for p in ["eq", "ne", "ult", "ule", "ugt", "uge", "slt", "sle", "sgt", "sge"]]

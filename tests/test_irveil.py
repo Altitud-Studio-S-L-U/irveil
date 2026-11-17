@@ -891,6 +891,48 @@ define i32 @main() {
         self.assertEqual(original, canonical_ir(self.transform(source,
             "irveil<transforms=strings;max-string-bytes=2>")))
 
+    def test_strings_preserve_bytes_observed_by_assembly(self):
+        program = annotations(["reader"]) + r'''
+@s = private constant [2 x i8] c"A\00"
+define i8 @reader() {
+  %v = load i8, ptr @s
+  ret i8 %v
+}
+define i32 @main() {
+  %x = call i8 @reader()
+  %y = call i8 @observer()
+  %mismatch = icmp ne i8 %x, %y
+  %result = zext i1 %mismatch to i32
+  ret i32 %result
+}
+'''
+        observers = {
+            "inline": '''
+define i8 @observer() {
+  %v = call i8 asm sideeffect "movb .Ls(%rip), $0", "=q,~{memory}"()
+  ret i8 %v
+}
+''',
+            "module": '''
+module asm ".set irveil_asm_alias, .Ls"
+@irveil_asm_alias = external global i8
+define i8 @observer() {
+  %v = load i8, ptr @irveil_asm_alias
+  ret i8 %v
+}
+''',
+        }
+        for kind, observer in observers.items():
+            with self.subTest(kind=kind):
+                source = 'target triple = "x86_64-pc-linux-gnu"\n' + observer + program
+                for pipeline in ["verify", "irveil<transforms=strings>"]:
+                    ir = self.transform(source, pipeline)
+                    executable = self.work / f"strings-asm-{kind}"
+                    self.checked([self.llvm / "clang++", "-O0", "-x", "ir", "-", "-o", executable],
+                                 input_text=ir)
+                    self.checked([executable])
+                    self.assertNotIn("!irveil.encoded", ir)
+
     def test_strings_reject_escapes_shared_volatile_atomic_and_wide_reads(self):
         cases = [
             ('declare void @escape(ptr)\n', 'call void @escape(ptr @s)'),

@@ -4,6 +4,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -45,6 +46,19 @@ bool encodeConstants(llvm::Function &function, const Config &config,
 }
 
 namespace {
+bool hasOpaqueAssembly(const llvm::Module &module) {
+  if (!module.getModuleInlineAsm().empty()) return true;
+  for (const auto &function : module) {
+    for (const auto &instruction : llvm::instructions(function)) {
+      const auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+      if (!call) continue;
+      const auto *assembly = llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand());
+      if (assembly && !assembly->getAsmString().empty()) return true;
+    }
+  }
+  return false;
+}
+
 bool collectLoads(llvm::GlobalVariable &global,
                   const llvm::SmallPtrSetImpl<llvm::Function *> &eligible,
                   std::uint32_t limit,
@@ -78,7 +92,9 @@ bool collectLoads(llvm::GlobalVariable &global,
 
 void encodeStrings(llvm::Module &module, llvm::ArrayRef<llvm::Function *> functions,
                    const Config &config, Statistics &statistics) {
-  if (!(effectiveTransforms(config) & Strings)) return;
+  // Assembly can name a private symbol without creating an LLVM use of it.
+  if (!(effectiveTransforms(config) & Strings) || functions.empty() || hasOpaqueAssembly(module))
+    return;
   llvm::SmallPtrSet<llvm::Function *, 16> eligible(functions.begin(), functions.end());
   std::uint32_t remaining = config.maxStringBytesPerModule;
   std::uint32_t remainingLoads = config.maxStringLoadsPerModule;

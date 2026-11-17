@@ -1,14 +1,13 @@
 #include "irveil/Pass.h"
+#include "ArithmeticTransform.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/NoFolder.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -20,7 +19,6 @@ namespace {
 
 constexpr llvm::StringLiteral ProcessedAttribute = "irveil.processed";
 
-enum class AddIdentity { XorCarry, DoubleOrMinusXor };
 
 llvm::SmallVector<llvm::Function *, 16>
 selectFunctions(llvm::Module &module) {
@@ -101,43 +99,6 @@ collectAdds(llvm::Function &function, std::uint32_t cap) {
   return additions;
 }
 
-llvm::Value *emitXorCarry(llvm::IRBuilder<llvm::NoFolder> &builder,
-                          llvm::Value *left, llvm::Value *right) {
-  llvm::Value *common = builder.CreateAnd(left, right, "irveil.and");
-  llvm::Value *bits = builder.CreateXor(left, right, "irveil.xor");
-  llvm::Value *carry = builder.CreateShl(
-      common, llvm::ConstantInt::get(left->getType(), 1), "irveil.carry");
-  return builder.CreateAdd(bits, carry, "irveil.sum");
-}
-
-llvm::Value *emitDoubleOrMinusXor(llvm::IRBuilder<llvm::NoFolder> &builder,
-                                  llvm::Value *left, llvm::Value *right) {
-  llvm::Value *bits = builder.CreateOr(left, right, "irveil.or");
-  llvm::Value *doubled = builder.CreateShl(
-      bits, llvm::ConstantInt::get(left->getType(), 1), "irveil.doubled");
-  llvm::Value *different = builder.CreateXor(left, right, "irveil.xor");
-  return builder.CreateSub(doubled, different, "irveil.sum");
-}
-
-void rewriteAdd(llvm::BinaryOperator &add, AddIdentity identity) {
-  // NoFolder keeps constant operands from collapsing the intended IR structure.
-  // Fresh instructions deliberately inherit no nsw, nuw, exact or other flags.
-  llvm::IRBuilder<llvm::NoFolder> builder(&add);
-  builder.SetCurrentDebugLocation(add.getDebugLoc());
-
-  // The identities duplicate their operands. Freeze once per original operand
-  // so every generated use observes the same choice for an undef/poison value.
-  llvm::Value *left = builder.CreateFreeze(add.getOperand(0), "irveil.left");
-  llvm::Value *right = builder.CreateFreeze(add.getOperand(1), "irveil.right");
-  llvm::Value *replacement = identity == AddIdentity::XorCarry
-                                 ? emitXorCarry(builder, left, right)
-                                 : emitDoubleOrMinusXor(builder, left, right);
-
-  replacement->takeName(&add);
-  add.replaceAllUsesWith(replacement);
-  add.eraseFromParent();
-}
-
 } // namespace
 
 llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config) {
@@ -161,9 +122,9 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
     std::uint64_t state = functionSeed(function->getName(), config.seed);
     for (llvm::BinaryOperator *add : additions) {
       const auto identity = (nextRandom(state) & 1) != 0
-                                ? AddIdentity::XorCarry
-                                : AddIdentity::DoubleOrMinusXor;
-      rewriteAdd(*add, identity);
+                                ? ArithmeticIdentity::XorCarry
+                                : ArithmeticIdentity::DoubleOrMinusXor;
+      rewriteArithmetic(*add, identity);
     }
 
     function->addFnAttr(ProcessedAttribute);

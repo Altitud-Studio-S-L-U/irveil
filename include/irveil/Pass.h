@@ -5,16 +5,31 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace irveil {
 
 enum class Profile { Arithmetic, General };
+
+enum Transform : std::uint32_t {
+  Adds = 1u << 0, Subtracts = 1u << 1, Bitwise = 1u << 2,
+  Comparisons = 1u << 3, Branches = 1u << 4, CFG = 1u << 5,
+  Loops = 1u << 6, Switches = 1u << 7, Constants = 1u << 8,
+  Strings = 1u << 9
+};
+constexpr std::uint32_t AllTransforms = (1u << 10) - 1;
 
 struct Config {
   std::uint64_t seed = 0;
   // In General profile this bounds all eligible rewrites per function.
   std::uint32_t maxAddsPerFunction = 256;
   Profile profile = Profile::Arithmetic;
+  // An explicit mask replaces the profile's defaults; zero disables all work.
+  std::optional<std::uint32_t> transforms;
+  std::uint32_t maxEdgesPerFunction = 32;
+  std::uint32_t maxSwitchCasesPerFunction = 64;
+  std::uint32_t maxConstantsPerFunction = 32;
+  std::uint32_t maxStringBytesPerModule = 4096;
 };
 
 struct Statistics {
@@ -26,6 +41,12 @@ struct Statistics {
   std::uint64_t rewrittenBitwise = 0;
   std::uint64_t rewrittenComparisons = 0;
   std::uint64_t rewrittenBranches = 0;
+  std::uint64_t routedCFGEdges = 0;
+  std::uint64_t routedLoopEdges = 0;
+  std::uint64_t loweredSwitches = 0;
+  std::uint64_t encodedConstants = 0;
+  std::uint64_t encodedStrings = 0;
+  std::uint64_t encodedStringBytes = 0;
 };
 
 // Selects functions carrying Clang's annotate("irveil") in llvm.global.annotations.

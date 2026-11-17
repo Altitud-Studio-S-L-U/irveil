@@ -249,6 +249,35 @@ entry:
         body = function_body(capped, "protected")
         self.assertEqual(len(re.findall(r"add i32 %a, %b", body)), 7)
 
+    def test_modular_selection_rejection_and_branch_weights(self):
+        source = annotations(["f"]) + '''
+define i32 @f(i32 %a, i32 %b, i1 %c) {
+entry:
+  %r = sub i32 %a, %b
+  br i1 %c, label %yes, label %no, !prof !0
+yes:
+  ret i32 %r
+no:
+  ret i32 %a
+}
+!0 = !{!"branch_weights", i32 90, i32 10}
+'''
+        unchanged = self.transform(source, "verify")
+        self.assertEqual(canonical_ir(unchanged), canonical_ir(self.transform(
+            source, "irveil<profile=general;transforms=none>")))
+        branch = self.transform(source, "irveil<transforms=branches>")
+        self.assertIn("sub i32 %a, %b", branch)
+        self.assertIn('!{!"branch_weights", i32 10, i32 90}', branch)
+        for option in ["transforms=", "transforms=adds+", "transforms=+adds",
+                       "transforms=adds++cfg", "transforms=adds+adds", "transforms=other",
+                       "transforms=none+adds", "transforms=none;transforms=cfg",
+                       "max-edges=0", "max-edges=257", "max-switch-cases=257",
+                       "max-constants=4097", "max-string-bytes=65537"]:
+            with self.subTest(option=option):
+                result = execute([self.llvm / "opt", "-load-pass-plugin", self.plugin,
+                                  f"-passes=irveil<{option}>", "-disable-output", "-"], input_text=source)
+                self.assertNotEqual(result.returncode, 0)
+
     def test_per_function_cap_and_bounded_expansion(self):
         source = self.fixture("selection.ll")
         original = function_body(self.transform(source, "verify"), "protected")

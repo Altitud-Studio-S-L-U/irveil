@@ -1,5 +1,6 @@
 #include "InstructionTransform.h"
 #include "ArithmeticTransform.h"
+#include "irveil/Pass.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
@@ -58,33 +59,30 @@ void rewriteBranch(llvm::BranchInst &branch) {
   llvm::IRBuilder<llvm::NoFolder> builder(&branch);
   builder.SetCurrentDebugLocation(branch.getDebugLoc());
   llvm::Value *opposite = builder.CreateNot(branch.getCondition(), "irveil.branch.condition");
-  llvm::BasicBlock *yes = branch.getSuccessor(0);
-  llvm::BasicBlock *no = branch.getSuccessor(1);
   branch.setCondition(opposite);
-  branch.setSuccessor(0, no);
-  branch.setSuccessor(1, yes);
+  // LLVM also swaps branch-weight metadata with the successor ordering.
+  branch.swapSuccessors();
 }
 
 } // namespace
 
-OperationKind classifyInstruction(const llvm::Instruction &instruction, bool general) {
+OperationKind classifyInstruction(const llvm::Instruction &instruction, std::uint32_t transforms) {
   if (const auto *operation = llvm::dyn_cast<llvm::BinaryOperator>(&instruction)) {
     if (!eligibleInteger(operation->getType())) return OperationKind::Unsupported;
     switch (operation->getOpcode()) {
-    case llvm::Instruction::Add: return OperationKind::Add;
-    case llvm::Instruction::Sub: return general ? OperationKind::Sub : OperationKind::Unsupported;
+    case llvm::Instruction::Add: return (transforms & Adds) ? OperationKind::Add : OperationKind::Unsupported;
+    case llvm::Instruction::Sub: return (transforms & Subtracts) ? OperationKind::Sub : OperationKind::Unsupported;
     case llvm::Instruction::And:
     case llvm::Instruction::Or:
     case llvm::Instruction::Xor:
-      return general ? OperationKind::Bitwise : OperationKind::Unsupported;
+      return (transforms & Bitwise) ? OperationKind::Bitwise : OperationKind::Unsupported;
     default: return OperationKind::Unsupported;
     }
   }
-  if (!general) return OperationKind::Unsupported;
   if (const auto *compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction))
-    return eligibleInteger(compare->getOperand(0)->getType()) ? OperationKind::Comparison : OperationKind::Unsupported;
+    return (transforms & Comparisons) && eligibleInteger(compare->getOperand(0)->getType()) ? OperationKind::Comparison : OperationKind::Unsupported;
   if (const auto *branch = llvm::dyn_cast<llvm::BranchInst>(&instruction))
-    return branch->isConditional() && branch->getSuccessor(0) != branch->getSuccessor(1)
+    return (transforms & Branches) && branch->isConditional() && branch->getSuccessor(0) != branch->getSuccessor(1)
                ? OperationKind::Branch : OperationKind::Unsupported;
   return OperationKind::Unsupported;
 }

@@ -1,5 +1,6 @@
 #include "irveil/Pass.h"
 #include "InstructionTransform.h"
+#include "Config.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -85,11 +86,11 @@ struct Candidate {
 };
 
 llvm::SmallVector<Candidate, 16> collectCandidates(llvm::Function &function,
-                                                    std::uint32_t cap, bool general) {
+                                                    std::uint32_t cap, std::uint32_t transforms) {
   llvm::SmallVector<Candidate, 16> candidates;
   for (llvm::BasicBlock &block : function) {
     for (llvm::Instruction &instruction : block) {
-      const auto kind = classifyInstruction(instruction, general);
+      const auto kind = classifyInstruction(instruction, transforms);
       if (kind == OperationKind::Unsupported) continue;
       candidates.push_back({&instruction, kind});
       if (candidates.size() == cap) return candidates;
@@ -101,10 +102,7 @@ llvm::SmallVector<Candidate, 16> collectCandidates(llvm::Function &function,
 } // namespace
 
 llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config) {
-  if (config.maxAddsPerFunction < 1 || config.maxAddsPerFunction > 4096)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "IRVeil maxAddsPerFunction must be between 1 and 4096");
+  if (auto error = validateConfig(config)) return std::move(error);
 
   Statistics statistics;
   auto functions = selectFunctions(module);
@@ -115,7 +113,7 @@ llvm::Expected<Statistics> applyObfuscation(llvm::Module &module, Config config)
 
     // Snapshot only original candidates; generated adds cannot enter this run.
     auto candidates = collectCandidates(*function, config.maxAddsPerFunction,
-                                        config.profile == Profile::General);
+                                        effectiveTransforms(config));
     if (candidates.empty())
       continue;
 
@@ -150,7 +148,18 @@ llvm::PreservedAnalyses IRVeilPass::run(
                  << " max-adds=" << config_.maxAddsPerFunction
                  << " selected=" << result->selectedFunctions
                  << " changed=" << result->changedFunctions
-                 << " rewritten-adds=" << result->rewrittenAdds << '\n';
+                 << " rewritten-adds=" << result->rewrittenAdds
+                 << " transforms=" << effectiveTransforms(config_)
+                 << " sub=" << result->rewrittenSubtracts
+                 << " bitwise=" << result->rewrittenBitwise
+                 << " cmp=" << result->rewrittenComparisons
+                 << " branches=" << result->rewrittenBranches
+                 << " cfg-edges=" << result->routedCFGEdges
+                 << " loop-edges=" << result->routedLoopEdges
+                 << " switches=" << result->loweredSwitches
+                 << " constants=" << result->encodedConstants
+                 << " strings=" << result->encodedStrings
+                 << " string-bytes=" << result->encodedStringBytes << '\n';
   return result->changedFunctions == 0 ? llvm::PreservedAnalyses::all()
                                        : llvm::PreservedAnalyses::none();
 }

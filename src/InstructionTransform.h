@@ -10,7 +10,7 @@ namespace irveil {
 enum class OperationKind { Add, Sub, Bitwise, Comparison, Branch, Unsupported };
 
 // Return the supported operation family. No user code or memory operations are inspected.
-OperationKind classifyInstruction(const llvm::Instruction &instruction, bool general);
+OperationKind classifyInstruction(const llvm::Instruction &instruction, std::uint32_t transforms);
 // Rewrite a classified instruction. The caller must not use the old instruction afterward.
 void rewriteInstruction(llvm::Instruction &instruction, OperationKind kind, std::uint64_t selector);
 

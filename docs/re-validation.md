@@ -364,3 +364,57 @@ arithmetic function are negative controls. General-versus-all is a combined-fami
 comparison, not attribution of a delta to each individual family. Known entries
 and a synthetic corpus do not quantify discovery, human effort or whole-program
 resistance; timings and byte counts do not establish protection.
+
+## Bounded flattening protocol
+
+Use `tools/re/flatten.py` and the separate owned `flatten-corpus.cpp`. Freeze this
+protocol before measuring. At each of O2/O3, compare ordinary direct Clang builds,
+direct Clang with only `transforms=flatten` (seed 42, default 16 cases/256 added
+instructions), and a reoptimized treatment: `opt default<O2/O3>` on flattened IR,
+then Clang at the same backend level with LLVM IR passes disabled. All use C++17,
+`-g0`, `-fno-pie -no-pie` and identical stripping. Separate same-option IR emissions
+record work and actual PHI-fed switches; an attribute is not survival evidence.
+
+The corpus covers branches, loop-carried values, memory aliases, recursive calls,
+and volatile-cell operations. Volatile accesses and disabled loop unrolling are
+source-fixture controls in every variant, not changes introduced by flattening.
+The input switch, selected straight-line function and unselected branch function
+are negative controls. Record actual per-function IR qualification rather than
+assuming every selected function flattens. Require nonzero work in the positive
+corpus, and byte-identical results for all 633 boundary/random rows (eight function
+results and four resulting memory cells) across symbols/stripped/all variants.
+
+Before Ghidra jobs, measure the same fixed workload with 1,000,000 benchmark
+iterations and five measured runs per variant after one omitted warmup. Alternate
+normal/flatten source-compilation pairs and forward/reverse three-variant runtime
+orders. Record high-resolution process wall time, individual samples and medians;
+check every benchmark checksum and every timed compilation's binary hash. The
+bounded CLI allows 1..100,000,000 iterations and 3..15 samples; changing these
+creates a separately described experiment. Do not compare reoptimized IR compile
+cost with ordinary source compilation. Process startup, warm filesystem caches,
+two-CPU affinity and uncontrolled host load remain limitations. Use native symbol
+instruction/byte counts and stripped file sizes alongside these timings.
+
+Run eight fresh Ghidra jobs: three variants and a repeated normal control at both
+optimization levels, with the existing exporter and fixed 120s analysis/30s
+per-function limits, Ghidra 12.2/JDK 25, 1 GiB maximum heap and two CPUs. Require
+both repeat controls to match. Grant known function locations from each own
+symbol companion and supply no source prototypes. Check input/tool fingerprints
+at the end. Generated evidence stays under `work/` and outside Git.
+
+```sh
+python3 tools/re/flatten.py --plugin build/IRVeilPass.so \
+  --llvm-bin /usr/lib/llvm-18/bin \
+  --ghidra-home /absolute/path/to/ghidra_12.2_PUBLIC \
+  --java-home /absolute/path/to/jdk-25 \
+  --iterations 1000000 --samples 5 \
+  --output /absolute/path/to/irveil/work/new-flatten-evidence
+```
+
+Inspect actual dispatch state updates/cycles in disassembly and decompiled C;
+native indirect/backward jumps and IR switches are descriptive observations.
+Recovery of direct flow by reoptimization or Ghidra is counterevidence. Retaining
+a readable state machine establishes structural survival only. Do not count
+decompiler type mistakes, timeouts or incomplete exports as resistance. No human
+timing, automated deobfuscation challenge or representative application study is
+performed, and no percentage of protection follows. Keep the feature opt-in.

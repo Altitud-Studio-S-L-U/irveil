@@ -444,7 +444,11 @@ define i32 @main() {
             self.assertNotEqual(result.returncode, 0)
 
     def test_flatten_parallel_phis_critical_edges_and_reoptimization(self):
-        source = self.fixture("flatten.ll")
+        # Private spill traffic must remain compatible with externally pure
+        # memory effects, including when another optimizer pipeline runs later.
+        source = self.fixture("flatten.ll").replace(
+            "@flat(i32 %n, i32 %a, i32 %b) {",
+            "@flat(i32 %n, i32 %a, i32 %b) memory(none) {")
         reference = source[source.index("define i32 @flat"):].replace("@flat(", "@reference(")
         source += reference + '''
 define i32 @main() {

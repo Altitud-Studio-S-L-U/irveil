@@ -85,6 +85,43 @@ The plugin can also transform an LLVM IR module through `opt-18`. See the [expli
 
 Use `IRVeil::Core` to call `irveil::applyObfuscation` from another C++ application. See the [standalone library consumer](docs/integration.md#embed-the-library). Consumers require the matching LLVM 18 development package; there is no stable cross-version LLVM ABI.
 
+## Experimental general profile (opt-in)
+
+The default profile remains the released arithmetic-only behavior. The
+experimental `general` profile additionally rewrites selected scalar integer
+`sub`, `and`, `or`, `xor`, integer comparisons (`icmp`), and conditional
+branches with distinct successors. It preserves branch destinations by swapping
+the targets when inverting the condition. The profile is bounded by the same
+per-function instruction count setting (named `max-adds` for compatibility).
+
+Use the general profile explicitly with `opt`:
+
+```sh
+opt-18 -load-pass-plugin ./build/IRVeilPass.so \
+  '-passes=irveil<profile=general;seed=42;max-adds=32>' \
+  -S input.ll -o output.ll
+```
+
+Or when compiling C/C++ via Clang:
+
+```sh
+clang++-18 -O2 -I include \
+  -Xclang -load -Xclang ./build/IRVeilPass.so \
+  -fpass-plugin=./build/IRVeilPass.so \
+  -mllvm -irveil-profile=general \
+  examples/demo.cpp -o build/demo-general
+```
+
+Unsupported instructions and values outside the documented scalar widths are
+left unchanged. Instructions are snapshotted before mutation, and only the
+selected functions are transformed. These rewrites are for semantic and
+compiler-architecture experiments: trivial inverse-comparison and De Morgan
+identities may be optimized away or recovered instantly by a decompiler.
+They are **not** a demonstrated increase in reverse-engineering resistance.
+Inspect the final binary and independently compare its behavior before claiming
+any protection. The profile does not yet implement control-flow flattening,
+constant/string encoding, memory transformations, or whole-program protection.
+
 ## Transformation contract
 
 For a scalar integer of width `w`, both identities preserve addition modulo `2^w`:

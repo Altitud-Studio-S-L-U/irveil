@@ -228,6 +228,14 @@ entry:
                 path.write_text(output, encoding="utf-8")
                 self.checked([self.llvm / "lli", path])
 
+    def test_general_profile_clang_integration(self):
+        flags = ("-Xclang", "-load", "-Xclang", str(self.plugin),
+                 "-mllvm", "-irveil-profile=general")
+        baseline = self.compile_demo("general-plain", "-O2")
+        transformed = self.compile_demo("general-clang", "-O2", plugin=True, extra=flags)
+        expected = self.checked([baseline, "10000"]).stdout
+        self.assertEqual(self.checked([transformed, "10000"]).stdout, expected)
+
     def test_general_profile_invalid_options_and_cap(self):
         source = self.fixture("selection.ll")
         for option in ["profile=", "profile=other", "profile=general;profile=general"]:
